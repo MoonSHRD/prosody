@@ -246,7 +246,7 @@ wrapserver = function( listeners, socket, ip, serverport, pattern, sslctx, maxco
         _socketlist[ socket ] = nil
         handler = nil
         socket = nil
-        mem_free( )
+        --mem_free( )
         out_put "server.lua: closed server handler and removed sockets from list"
     end
     handler.ip = function( )
@@ -373,7 +373,7 @@ wrapconnection = function( server, listeners, socket, ip, serverport, clientport
             handler = nil
         end
         socket = nil
-        mem_free( )
+        --mem_free( )
 	if server then
 		server.remove( )
 	end
@@ -483,13 +483,19 @@ wrapconnection = function( server, listeners, socket, ip, serverport, clientport
         end
     end
     local _sendbuffer = function( )    -- this function sends data
-        local buffer = table_concat( bufferqueue, "", 1, bufferqueuelen )
-        local succ, err, byte = send( socket, buffer, 1, bufferlen )
-        local count = ( succ or byte or 0 ) * STAT_UNIT
-        sendtraffic = sendtraffic + count
-        _sendtraffic = _sendtraffic + count
-        _ = _cleanqueue and clean( bufferqueue )
-        --out_put( "server.lua: sended '", buffer, "', bytes: ", tostring(succ), ", error: ", tostring(err), ", part: ", tostring(byte), ", to: ", tostring(ip), ":", tostring(clientport) )
+    	local succ, err, byte, buffer, count;
+    	local count;
+    	if socket then
+            buffer = table_concat( bufferqueue, "", 1, bufferqueuelen )
+            succ, err, byte = send( socket, buffer, 1, bufferlen )
+            count = ( succ or byte or 0 ) * STAT_UNIT
+            sendtraffic = sendtraffic + count
+            _sendtraffic = _sendtraffic + count
+            _ = _cleanqueue and clean( bufferqueue )
+            --out_put( "server.lua: sended '", buffer, "', bytes: ", tostring(succ), ", error: ", tostring(err), ", part: ", tostring(byte), ", to: ", tostring(ip), ":", tostring(clientport) )
+        else
+            succ, err, count = false, "closed", 0;
+        end
         if succ then    -- sending succesful
             bufferqueuelen = 0
             bufferlen = 0
@@ -559,7 +565,7 @@ wrapconnection = function( server, listeners, socket, ip, serverport, clientport
             socket, err = ssl_wrap( socket, sslctx )    -- wrap socket
             if err then
                 out_put( "server.lua: ssl error: ", tostring(err) )
-                mem_free( )
+                --mem_free( )
                 return nil, nil, err    -- fatal error
             end
             socket:settimeout( 0 )
@@ -664,7 +670,7 @@ closesocket = function( socket )
     _readlistlen = removesocket( _readlist, socket, _readlistlen )
     _socketlist[ socket ] = nil
     socket:close( )
-    mem_free( )
+    --mem_free( )
 end
 
 ----------------------------------// PUBLIC //--
@@ -733,7 +739,7 @@ closeall = function( )
     _sendlist = { }
     _timerlist = { }
     _socketlist = { }
-    mem_free( )
+    --mem_free( )
 end
 
 getsettings = function( )
