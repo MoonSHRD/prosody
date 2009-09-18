@@ -61,7 +61,7 @@ local function send_response(request, response)
 		end
 	else
 		-- Response we have is just a string (the body)
-		log("debug", "Sending response to %s: %s", request.id or "<none>", response or "<none>");
+		log("debug", "Sending 200 response to %s", request.id or "<none>");
 		
 		resp = { "HTTP/1.0 200 OK\r\n" };
 		t_insert(resp, "Connection: close\r\n");
@@ -89,9 +89,6 @@ local function call_callback(request, err)
 		end
 		
 		callback = (request.server and request.server.handlers[base]) or default_handler;
-		if callback == default_handler then
-			log("debug", "Default callback for this request (base: "..tostring(base)..")")
-		end
 	end
 	if callback then
 		if err then
@@ -249,6 +246,10 @@ function new(params)
 	if params.base then
 		http_server.handlers[params.base] = params.handler;
 	end
+end
+
+function set_default_handler(handler)
+	default_handler = handler;
 end
 
 function new_from_config(ports, default_base, handle_request)
