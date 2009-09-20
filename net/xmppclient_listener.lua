@@ -61,6 +61,7 @@ local function session_reset_stream(session)
 		function session.data(conn, data)
 			local ok, err = parser:parse(data);
 			if ok then return; end
+			log("debug", "Received invalid XML (%s) %d bytes: %s", tostring(err), #data, data:sub(1, 300):gsub("[\r\n]+", " "));
 			session:close("xml-not-well-formed");
 		end
 		
@@ -100,7 +101,7 @@ local function session_close(session, reason)
 		end
 		session.send("</stream:stream>");
 		session.conn.close();
-		xmppclient.disconnect(session.conn, (reason and reason.condition) or reason or "session closed");
+		xmppclient.disconnect(session.conn, (reason and (reason.text or reason.condition)) or reason or "session closed");
 	end
 end
 
@@ -113,11 +114,6 @@ function xmppclient.listener(conn, data)
 		session = sm_new_session(conn);
 		sessions[conn] = session;
 
-		-- Logging functions --
-
-		local conn_name = "c2s"..tostring(conn):match("[a-f0-9]+$");
-		session.log = logger.init(conn_name);
-		
 		session.log("info", "Client connected");
 		
 		-- Client is using legacy SSL (otherwise mod_tls sets this flag)
