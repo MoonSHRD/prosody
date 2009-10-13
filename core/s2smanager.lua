@@ -27,6 +27,7 @@ local st = require "stanza";
 local stanza = st.stanza;
 local nameprep = require "util.encodings".stringprep.nameprep;
 
+local fire_event = require "core.eventmanager".fire_event;
 local uuid_gen = require "util.uuid".generate;
 
 local logger_init = require "util.logger".init;
@@ -128,6 +129,7 @@ function new_incoming(conn)
 	end
 	open_sessions = open_sessions + 1;
 	local w, log = conn.write, logger_init("s2sin"..tostring(conn):match("[a-f0-9]+$"));
+	session.log = log;
 	session.sends2s = function (t) log("debug", "sending: %s", tostring(t)); w(tostring(t)); end
 	incoming_s2s[session] = true;
 	add_task(connect_timeout, function ()
@@ -144,7 +146,9 @@ function new_incoming(conn)
 end
 
 function new_outgoing(from_host, to_host)
-		local host_session = { to_host = to_host, from_host = from_host, notopen = true, type = "s2sout_unauthed", direction = "outgoing" };
+		local host_session = { to_host = to_host, from_host = from_host, host = from_host, 
+		                       notopen = true, type = "s2sout_unauthed", direction = "outgoing" };
+		
 		hosts[from_host].s2sout[to_host] = host_session;
 		
 		local log;
@@ -333,10 +337,16 @@ function streamopened(session, attr)
 	local send = session.sends2s;
 	
 	-- TODO: #29: SASL/TLS on s2s streams
-	session.version = 0; --tonumber(attr.version) or 0;
+	session.version = tonumber(attr.version) or 0;
+	
+	if session.secure == false then
+		session.secure = true;
+	end
 	
 	if session.version >= 1.0 and not (attr.to and attr.from) then
-		log("warn", (session.to_host or "(unknown)").." failed to specify 'to' or 'from' hostname as per RFC");
+		
+		(session.log or log)("warn", "Remote of stream "..(session.from_host or "(unknown)").."->"..(session.to_host or "(unknown)")
+			.." failed to specify to (%s) and/or from (%s) hostname as per RFC", tostring(attr.to), tostring(attr.from));
 	end
 	
 	if session.direction == "incoming" then
@@ -348,15 +358,23 @@ function streamopened(session, attr)
 		(session.log or log)("debug", "incoming s2s received <stream:stream>");
 		send("<?xml version='1.0'?>");
 		send(stanza("stream:stream", { xmlns='jabber:server', ["xmlns:db"]='jabber:server:dialback', 
-				["xmlns:stream"]='http://etherx.jabber.org/streams', id=session.streamid, from=session.to_host }):top_tag());
+				["xmlns:stream"]='http://etherx.jabber.org/streams', id=session.streamid, from=session.to_host, version=(session.version > 0 and "1.0" or nil) }):top_tag());
 		if session.to_host and not hosts[session.to_host] then
 			-- Attempting to connect to a host we don't serve
 			session:close({ condition = "host-unknown"; text = "This host does not serve "..session.to_host });
 			return;
 		end
 		if session.version >= 1.0 then
-			send(st.stanza("stream:features")
-					:tag("dialback", { xmlns='urn:xmpp:features:dialback' }):tag("optional"):up():up());
+			local features = st.stanza("stream:features");
+							
+			if session.to_host then
+				hosts[session.to_host].events.fire_event("s2s-stream-features", { session = session, features = features });
+			else
+				(session.log or log)("warn", "No 'to' on stream header from %s means we can't offer any features", session.from_host or "unknown host");
+			end
+			
+			log("debug", "Sending stream features: %s", tostring(features));
+			send(features);
 		end
 	elseif session.direction == "outgoing" then
 		-- If we are just using the connection for verifying dialback keys, we won't try and auth it
@@ -377,10 +395,14 @@ function streamopened(session, attr)
 		end
 		session.send_buffer = nil;
 	
-		if not session.dialback_verifying then
-			initiate_dialback(session);
-		else
-			mark_connected(session);
+		-- If server is pre-1.0, don't wait for features, just do dialback
+		if session.version < 1.0 then
+			if not session.dialback_verifying then
+				log("debug", "Initiating dialback...");
+				initiate_dialback(session);
+			else
+				mark_connected(session);
+			end
 		end
 	end
 
@@ -430,6 +452,7 @@ function make_authenticated(session, host)
 	return true;
 end
 
+-- Stream is authorised, and ready for normal stanzas
 function mark_connected(session)
 	local sendq, send = session.sendq, session.sends2s;
 	
