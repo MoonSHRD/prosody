@@ -434,9 +434,27 @@ wrapconnection = function( server, listeners, socket, ip, serverport, clientport
     handler.bufferlen = function( self, readlen, sendlen )
         maxsendlen = sendlen or maxsendlen
         maxreadlen = readlen or maxreadlen
-        return maxreadlen, maxsendlen
+        return bufferlen, maxreadlen, maxsendlen
+    end
+    handler.lock_read  = function (self, switch)
+        if switch == true then
+            local tmp = _readlistlen
+            _readlistlen = removesocket( _readlist, socket, _readlistlen )
+            _readtimes[ handler ] = nil
+            if _readlistlen ~= tmp then
+                noread = true
+            end
+        elseif switch == false then
+            if noread then
+                noread = false
+                _readlistlen = addsocket(_readlist, socket, _readlistlen)
+                _readtimes[ handler ] = _currenttime
+            end
+        end
+        return noread
     end
     handler.lock = function( self, switch )
+        handler.lock_read (switch)
         if switch == true then
             handler.write = idfalse
             local tmp = _sendlistlen
@@ -445,19 +463,8 @@ wrapconnection = function( server, listeners, socket, ip, serverport, clientport
             if _sendlistlen ~= tmp then
                 nosend = true
             end
-            tmp = _readlistlen
-            _readlistlen = removesocket( _readlist, socket, _readlistlen )
-            _readtimes[ handler ] = nil
-            if _readlistlen ~= tmp then
-                noread = true
-            end
         elseif switch == false then
             handler.write = write
-            if noread then
-                noread = false
-                _readlistlen = addsocket(_readlist, socket, _readlistlen)
-                _readtimes[ handler ] = _currenttime
-            end
             if nosend then
                 nosend = false
                 write( "" )
@@ -467,7 +474,7 @@ wrapconnection = function( server, listeners, socket, ip, serverport, clientport
     end
     local _readbuffer = function( )    -- this function reads data
         local buffer, err, part = receive( socket, pattern )    -- receive buffer with "pattern"
-        if not err or ( err == "timeout" or err == "wantread" ) then    -- received something
+        if not err or (err == "wantread" or err == "timeout") or string_len(part) > 0 then    -- received something
             local buffer = buffer or part or ""
             local len = string_len( buffer )
             if len > maxreadlen then

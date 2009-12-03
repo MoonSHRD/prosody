@@ -55,8 +55,12 @@ function connlistener.onincoming(conn, data)
 	if session.setup then
 		if session.sha ~= nil and transfers[session.sha] ~= nil then
 			local sha = session.sha;
-			if transfers[sha].activated == true and transfers[sha].initiator == conn and transfers[sha].target ~= nil then
-				transfers[sha].target:write(data);
+			if transfers[sha].activated == true and transfers[sha].target ~= nil then
+				if  transfers[sha].initiator == conn then
+					transfers[sha].target:write(data);
+				else
+					transfers[sha].initiator:write(data);
+				end
 				return;
 			end
 		end
@@ -67,7 +71,7 @@ function connlistener.onincoming(conn, data)
 			data:sub(4):byte() == 0x03 and -- ATYP must be 3
 			data:sub(5):byte() == 40 and -- SHA1 HASH length must be 40 (0x28)
 			data:sub(-2):byte() == 0x00 and -- PORT must be 0, size 2 byte
-			data:sub(-1):byte() == 0x00 		
+			data:sub(-1):byte() == 0x00
 		then
 			local sha = data:sub(6, 45); -- second param is not count! it's the ending index (included!)
 			if transfers[sha] == nil then
@@ -80,10 +84,13 @@ function connlistener.onincoming(conn, data)
 				transfers[sha].initiator = conn;
 				session.sha = sha;
 				module:log("debug", "initiator connected ... ");
+				throttle_sending(conn, transfers[sha].target);          
+				throttle_sending(transfers[sha].target, conn);          
 			end
 			conn:write(string.char(5, 0, 0, 3, sha:len()) .. sha .. string.char(0, 0)); -- VER, REP, RSV, ATYP, BND.ADDR (sha), BND.PORT (2 Byte)
+			conn:lock_read(true)
 		else
-			log:module("warn", "Neither data transfer nor initial connect of a participator of a transfer.")
+			module:log("warn", "Neither data transfer nor initial connect of a participator of a transfer.")
 			conn.close();
 		end
 	else
@@ -237,6 +244,8 @@ function handle_to_domain(origin, stanza)
 				elseif(transfers[sha] ~= nil and transfers[sha].initiator ~= nil and transfers[sha].target ~= nil) then
 					origin.send(reply);
 					transfers[sha].activated = true;
+					transfers[sha].target:lock_read(false);
+					transfers[sha].initiator:lock_read(false);
 				end
 			else
 				module:log("error", "activation failed: sid: %s, initiator: %s, target: %s", tostring(sid), tostring(from), tostring(to));
@@ -247,9 +256,31 @@ function handle_to_domain(origin, stanza)
 end
 
 if not connlisteners.register(module.host .. ':proxy65', connlistener) then
-	error("mod_proxy65: Could not establish a connection listener. Check your configuration please.");
-	error(" one possible cause for this would be that two proxy65 components share the same port.");
+	module:log("error", "mod_proxy65: Could not establish a connection listener. Check your configuration please.");
+	module:log("error", "Possibly two proxy65 components are configured to share the same port.");
 end
 
 connlisteners.start(module.host .. ':proxy65');
 component = componentmanager.register_component(host, handle_to_domain);
+local sender_lock_threshold = 4096;
+function throttle_sending(sender, receiver)
+	sender:pattern(sender_lock_threshold);
+	local sender_locked;
+	local _sendbuffer = receiver.sendbuffer;
+	function receiver.sendbuffer()
+		_sendbuffer();
+		if sender_locked and receiver.bufferlen() < sender_lock_threshold then
+			sender:lock_read(false); -- Unlock now
+			sender_locked = nil;
+		end
+	end
+	
+	local _readbuffer = sender.readbuffer;
+	function sender.readbuffer()
+		_readbuffer();
+		if not sender_locked and receiver.bufferlen() >= sender_lock_threshold then
+			sender_locked = true;
+			sender:lock_read(true);
+		end
+	end
+end
