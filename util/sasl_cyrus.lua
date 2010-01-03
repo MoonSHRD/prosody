@@ -31,12 +31,25 @@ module "sasl_cyrus"
 
 local method = {};
 method.__index = method;
+local initialized = false;
 
-pcall(cyrussasl.server_init, "prosody")
+local function init(service_name)
+	if not initialized then
+		local st, errmsg = pcall(cyrussasl.server_init, service_name);
+		if st then
+			initialized = true;
+		else
+			log("error", "Failed to initialize CyrusSASL: %s", errmsg);
+		end
+	end
+end
 
 -- create a new SASL object which can be used to authenticate clients
 function new(realm, service_name)
 	local sasl_i = {};
+
+	init(service_name);
+
 	sasl_i.realm = realm;
 	sasl_i.service_name = service_name;
 	sasl_i.cyrus = cyrussasl.server_new(service_name, nil, nil, nil, nil)
@@ -64,17 +77,17 @@ end
 function method:mechanisms()
 	local mechanisms = {}
 	local cyrus_mechs = cyrussasl.listmech(self.cyrus, nil, "", " ", "")
-	for w in s_gmatch(cyrus_mechs, "%a+") do
+	for w in s_gmatch(cyrus_mechs, "[^ ]+") do
 		mechanisms[w] = true;
 	end
-	self.mechanisms = mechanisms
+	self.mechs = mechanisms
 	return array.collect(keys(mechanisms));
 end
 
 -- select a mechanism to use
 function method:select(mechanism)
 	self.mechanism = mechanism;
-	return self.mechanisms[mechanism];
+	return self.mechs[mechanism];
 end
 
 -- feed new messages to process into the library
