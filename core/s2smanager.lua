@@ -389,7 +389,7 @@ function streamopened(session, attr)
 			local features = st.stanza("stream:features");
 			
 			if session.to_host then
-				hosts[session.to_host].events.fire_event("s2s-stream-features", { session = session, features = features });
+				hosts[session.to_host].events.fire_event("s2s-stream-features", { origin = session, features = features });
 			else
 				(session.log or log)("warn", "No 'to' on stream header from %s means we can't offer any features", session.from_host or "unknown host");
 			end
@@ -508,6 +508,8 @@ function mark_connected(session)
 	end
 end
 
+local function null_data_handler(conn, data) log("debug", "Discarding data from destroyed s2s session: %s", data); end
+
 function destroy_session(session, reason)
 	(session.log or log)("info", "Destroying "..tostring(session.direction).." session "..tostring(session.from_host).."->"..tostring(session.to_host));
 	
@@ -523,6 +525,7 @@ function destroy_session(session, reason)
 			session[k] = nil;
 		end
 	end
+	session.data = null_data_handler;
 end
 
 return _M;

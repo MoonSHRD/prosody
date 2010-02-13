@@ -18,6 +18,7 @@ local st = require "util.stanza";
 local jid_split = require "util.jid".split;
 local jid_bare = require "util.jid".bare;
 local hosts = hosts;
+local NULL = {};
 
 local rostermanager = require "core.rostermanager";
 local sessionmanager = require "core.sessionmanager";
@@ -54,16 +55,18 @@ local function select_top_resources(user)
 	end
 	return recipients;
 end
-local function recalc_resource_map(origin)
-	local user = hosts[origin.host].sessions[origin.username];
-	user.top_resources = select_top_resources(user);
-	if #user.top_resources == 0 then user.top_resources = nil; end
+local function recalc_resource_map(user)
+	if user then
+		user.top_resources = select_top_resources(user);
+		if #user.top_resources == 0 then user.top_resources = nil; end
+	end
 end
 
 function handle_normal_presence(origin, stanza, core_route_stanza)
 	local roster = origin.roster;
 	local node, host = origin.username, origin.host;
-	for _, res in pairs(hosts[host].sessions[node].sessions) do -- broadcast to all resources
+	local user = bare_sessions[node.."@"..host];
+	for _, res in pairs(user and user.sessions or NULL) do -- broadcast to all resources
 		if res ~= origin and res.presence then -- to resource
 			stanza.attr.to = res.full_jid;
 			core_route_stanza(origin, stanza);
@@ -84,7 +87,7 @@ function handle_normal_presence(origin, stanza, core_route_stanza)
 				core_route_stanza(origin, probe);
 			end
 		end
-		for _, res in pairs(hosts[host].sessions[node].sessions) do -- broadcast from all available resources
+		for _, res in pairs(user and user.sessions or NULL) do -- broadcast from all available resources
 			if res ~= origin and res.presence then
 				res.presence.attr.to = origin.full_jid;
 				core_route_stanza(res, res.presence);
@@ -115,7 +118,7 @@ function handle_normal_presence(origin, stanza, core_route_stanza)
 		origin.presence = nil;
 		if origin.priority then
 			origin.priority = nil;
-			recalc_resource_map(origin);
+			recalc_resource_map(user);
 		end
 		if origin.directed then
 			for jid in pairs(origin.directed) do
@@ -137,7 +140,7 @@ function handle_normal_presence(origin, stanza, core_route_stanza)
 		else priority = 0; end
 		if origin.priority ~= priority then
 			origin.priority = priority;
-			recalc_resource_map(origin);
+			recalc_resource_map(user);
 		end
 	end
 	stanza.attr.to = nil; -- reset it

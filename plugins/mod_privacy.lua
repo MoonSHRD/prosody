@@ -17,16 +17,6 @@ local jid_split = util_Jid.split;
 local load_roster = require "core.rostermanager".load_roster;
 local to_number = tonumber;
 
-function findNamedList(privacy_lists, name)
-	if privacy_lists.lists then
-		for i=1,#privacy_lists.lists do
-			if privacy_lists.lists[i].name == name then
-				return i;
-			end
-		end
-	end
-end
-
 function isListUsed(origin, name, privacy_lists)
 	local user = bare_sessions[origin.username.."@"..origin.host];
 	if user then
@@ -75,40 +65,6 @@ function sendUnavailable(origin, to, from)
 	end
 end
 
-function sendNeededUnavailablePersences(origin, listnameOrItem) -- TODO implement it correctly!
-	if type(listnameOrItem) == "string" then
-		local listname = listnameOrItem;
-		for _,list in ipairs(privacy_lists.lists) do
-			if list.name == listname then
-				for _,item in ipairs(list.items) do
-					sendNeededUnavailablePersences(origin, item);
-				end
-			end
-		end
-	elseif type(listnameOrItem) == "table" then
-		module:log("debug", "got an item, check whether to send unavailable presence stanza or not");
-		local item = listnameOrItem;
-
-		if item["presence-out"] == true then
-			if item.type == "jid" then
-				sendUnavailable(origin, item.value, origin.full_jid);
-			elseif item.type == "group" then
-			elseif item.type == "subscription" then
-			elseif item.type == nil then
-			end
-		elseif item["presence-in"] == true then
-			if item.type == "jid" then
-				sendUnavailable(origin, origin.full_jid, item.value);
-			elseif item.type == "group" then
-			elseif item.type == "subscription" then
-			elseif item.type == nil then
-			end
-		end
-	else
-		module:log("debug", "got unknown type: %s", type(listnameOrItem));
-	end
-end
-
 function declineList(privacy_lists, origin, stanza, which)
 	if which == "default" then
 		if isAnotherSessionUsingDefaultList(origin) then
@@ -126,30 +82,17 @@ function declineList(privacy_lists, origin, stanza, which)
 end
 
 function activateList(privacy_lists, origin, stanza, which, name)
-	local idx = findNamedList(privacy_lists, name);
+	local list = privacy_lists.lists[name];
 
-	if privacy_lists.default == nil then
-		privacy_lists.default = "";
-	end
-	if origin.activePrivacyList == nil then
-		origin.activePrivacyList = "";
-	end
-	
-	if which == "default" and idx ~= nil then
+	if which == "default" and list then
 		if isAnotherSessionUsingDefaultList(origin) then
 			return {"cancel", "conflict", "Another session is online and using the default list."};
 		end
 		privacy_lists.default = name;
 		origin.send(st.reply(stanza));
---[[
-		if origin.activePrivacyList == nil then
-			sendNeededUnavailablePersences(origin, name);
-		end
-]]--
-	elseif which == "active" and idx ~= nil then
+	elseif which == "active" and list then
 		origin.activePrivacyList = name;
 		origin.send(st.reply(stanza));
-		-- sendNeededUnavailablePersences(origin, name);
 	else
 		return {"modify", "bad-request", "Either not active or default given or unknown list name specified."};
 	end
@@ -157,19 +100,19 @@ function activateList(privacy_lists, origin, stanza, which, name)
 end
 
 function deleteList(privacy_lists, origin, stanza, name)
-	local idx = findNamedList(privacy_lists, name);
+	local list = privacy_lists.lists[name];
 
-	if idx ~= nil then
+	if list then
 		if isListUsed(origin, name, privacy_lists) then
 			return {"cancel", "conflict", "Another session is online and using the list which should be deleted."};
 		end
 		if privacy_lists.default == name then
-			privacy_lists.default = "";
+			privacy_lists.default = nil;
 		end
 		if origin.activePrivacyList == name then
-			origin.activePrivacyList = "";
+			origin.activePrivacyList = nil;
 		end
-		table.remove(privacy_lists.lists, idx);
+		privacy_lists.lists[name] = nil;
 		origin.send(st.reply(stanza));
 		return true;
 	end
@@ -177,19 +120,16 @@ function deleteList(privacy_lists, origin, stanza, name)
 end
 
 function createOrReplaceList (privacy_lists, origin, stanza, name, entries, roster)
-	local idx = findNamedList(privacy_lists, name);
 	local bare_jid = origin.username.."@"..origin.host;
 	
 	if privacy_lists.lists == nil then
 		privacy_lists.lists = {};
 	end
 
-	if idx == nil then
-		idx = #privacy_lists.lists + 1;
-	end
+	local list = {};
+	privacy_lists.lists[name] = list;
 
 	local orderCheck = {};
-	local list = {};
 	list.name = name;
 	list.items = {};
 
@@ -251,20 +191,11 @@ function createOrReplaceList (privacy_lists, origin, stanza, name, entries, rost
 		if tmp.action ~= "deny" and tmp.action ~= "allow" then
 			return {"cancel", "bad-request", "Action must be either deny or allow."};
 		end
-		
---[[
-		if (privacy_lists.default == name and origin.activePrivacyList == nil) or origin.activePrivacyList == name then
-			module:log("debug", "calling sendNeededUnavailablePresences!");
-			-- item is valid and list is active, so send needed unavailable stanzas
-			sendNeededUnavailablePersences(origin, tmp);
-		end
-]]--
 		list.items[#list.items + 1] = tmp;
 	end
 	
 	table.sort(list, function(a, b) return a.order < b.order; end);
 
-	privacy_lists.lists[idx] = list;
 	origin.send(st.reply(stanza));
 	if bare_sessions[bare_jid] ~= nil then
 		local iq = st.iq ( { type = "set", id="push1" } );
@@ -286,17 +217,20 @@ function getList(privacy_lists, origin, stanza, name)
 	reply:tag("query", {xmlns="jabber:iq:privacy"});
 
 	if name == nil then
-		reply:tag("active", {name=origin.activePrivacyList or ""}):up();
-		reply:tag("default", {name=privacy_lists.default or ""}):up();
 		if privacy_lists.lists then
-			for _,list in ipairs(privacy_lists.lists) do
-				reply:tag("list", {name=list.name}):up();
+			if origin.ActivePrivacyList then
+				reply:tag("active", {name=origin.activePrivacyList}):up();
+			end
+			if privacy_lists.default then
+				reply:tag("default", {name=privacy_lists.default}):up();
+			end
+			for name,list in pairs(privacy_lists.lists) do
+				reply:tag("list", {name=name}):up();
 			end
 		end
 	else
-		local idx = findNamedList(privacy_lists, name);
-		if idx ~= nil then
-			local list = privacy_lists.lists[idx];
+		local list = privacy_lists.lists[name];
+		if list then
 			reply = reply:tag("list", {name=list.name});
 			for _,item in ipairs(list.items) do
 				reply:tag("item", {type=item.type, value=item.value, action=item.action, order=item.order});
@@ -321,7 +255,16 @@ module:hook("iq/bare/jabber:iq:privacy:query", function(data)
 	if stanza.attr.to == nil then -- only service requests to own bare JID
 		local query = stanza.tags[1]; -- the query element
 		local valid = false;
-		local privacy_lists = datamanager.load(origin.username, origin.host, "privacy") or {};
+		local privacy_lists = datamanager.load(origin.username, origin.host, "privacy") or { lists = {} };
+
+		if privacy_lists.lists[1] then -- Code to migrate from old privacy lists format, remove in 0.8
+			module:log("info", "Upgrading format of stored privacy lists for %s@%s", origin.username, origin.host);
+			local lists = privacy_lists.lists;
+			for idx, list in ipairs(lists) do
+				lists[list.name] = list;
+				lists[idx] = nil;
+			end
+		end
 
 		if stanza.attr.type == "set" then
 			if #query.tags == 1 then --  the <query/> element MUST NOT include more than one child element
@@ -358,13 +301,14 @@ module:hook("iq/bare/jabber:iq:privacy:query", function(data)
 		end
 
 		if valid ~= true then
-			if valid[0] == nil then
-				valid[0] = "cancel";
-			end
+			valid = valid or { "cancel", "bad-request", "Couldn't understand request" };
 			if valid[1] == nil then
-				valid[1] = "bad-request";
+				valid[1] = "cancel";
 			end
-			origin.send(st.error_reply(stanza, valid[0], valid[1], valid[2]));
+			if valid[2] == nil then
+				valid[2] = "bad-request";
+			end
+			origin.send(st.error_reply(stanza, valid[1], valid[2], valid[3]));
 		else
 			datamanager.store(origin.username, origin.host, "privacy", privacy_lists);
 		end
@@ -385,8 +329,7 @@ function checkIfNeedToBeBlocked(e, session)
 	module:log("debug", "stanza: %s, to: %s, from: %s", tostring(stanza.name), tostring(to), tostring(from));
 	
 	if privacy_lists.lists == nil or
-		(session.activePrivacyList == nil or session.activePrivacyList == "") and
-		(privacy_lists.default == nil     or privacy_lists.default == "")
+		not (session.activePrivacyList or privacy_lists.default)
 	then
 		return; -- Nothing to block, default is Allow all
 	end
@@ -395,21 +338,14 @@ function checkIfNeedToBeBlocked(e, session)
 		return; -- from one of a user's resource to another => HANDS OFF!
 	end
 	
-	local idx;
-	local list;
 	local item;
 	local listname = session.activePrivacyList;
-	if listname == nil or listname == "" then
+	if listname == nil then
 		listname = privacy_lists.default; -- no active list selected, use default list
 	end
-	idx = findNamedList(privacy_lists, listname);
-	if idx == nil then
-		module:log("debug", "given privacy listname not found. name: %s", listname);
-		return;
-	end
-	list = privacy_lists.lists[idx];
-	if list == nil then
-		module:log("debug", "privacy list index wrong. index: %d", idx);
+	local list = privacy_lists.lists[listname];
+	if not list then
+		module:log("debug", "given privacy list not found. name: %s", listname);
 		return;
 	end
 	for _,item in ipairs(list.items) do
