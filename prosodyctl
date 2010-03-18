@@ -29,12 +29,6 @@ if CFG_DATADIR then
 	end
 end
 
--- Required to be able to find packages installed with luarocks
-if not pcall(require, "luarocks.loader") then -- Try LuaRocks 2.x
-	pcall(require, "luarocks.require") -- Try LuaRocks 1.x
-end
-
-
 config = require "core.configmanager"
 
 do
@@ -63,13 +57,21 @@ do
 	end
 end
 
+require "core.loggingmanager"
+
+if not require "util.dependencies".check_dependencies() then
+	os.exit(1);
+end
+
+prosody = { hosts = {}, events = events, platform = "posix" };
+
 local data_path = config.get("*", "core", "data_path") or CFG_DATADIR or "data";
 require "util.datamanager".set_data_path(data_path);
 
 -- Switch away from root and into the prosody user --
 local switched_user, current_uid;
 
-local want_pposix_version = "0.3.1";
+local want_pposix_version = "0.3.3";
 local ok, pposix = pcall(require, "util.pposix");
 
 if ok and pposix then
@@ -92,6 +94,9 @@ if ok and pposix then
 			print("Warning: Couldn't switch to Prosody user/group '"..tostring(desired_user).."'/'"..tostring(desired_group).."': "..tostring(err));
 		end
 	end
+	
+	-- Set our umask to protect data files
+	pposix.umask(config.get("*", "core", "umask") or "027");
 else
 	print("Error: Unable to load pposix module. Check that Prosody is installed correctly.")
 	print("For more help send the below error to us through http://prosody.im/discuss");
@@ -111,8 +116,7 @@ local error_messages = setmetatable({
 
 local events = require "util.events".new();
 
-hosts = {};
-prosody = { hosts = hosts, events = events };
+hosts = prosody.hosts;
 
 for hostname, config in pairs(config.getconfig()) do
 	hosts[hostname] = { events = events };
@@ -335,21 +339,23 @@ function commands.start(arg)
 	
 	local ok, ret = prosodyctl.start();
 	if ok then
-		local i=1;
-		while true do
-			local ok, running = prosodyctl.isrunning();
-			if ok and running then
-				break;
-			elseif i == 5 then
-				show_message("Still waiting...");
-			elseif i >= prosodyctl_timeout then
-				show_message("Prosody is still not running. Please give it some time or check your log files for errors.");
-				return 2;
+		if config.get("*", "core", "daemonize") ~= false then
+			local i=1;
+			while true do
+				local ok, running = prosodyctl.isrunning();
+				if ok and running then
+					break;
+				elseif i == 5 then
+					show_message("Still waiting...");
+				elseif i >= prosodyctl_timeout then
+					show_message("Prosody is still not running. Please give it some time or check your log files for errors.");
+					return 2;
+				end
+				socket.sleep(0.5);
+				i = i + 1;
 			end
-			socket.sleep(0.5);
-			i = i + 1;
+			show_message("Started");
 		end
-		show_message("Started");
 		return 0;
 	end
 
@@ -427,6 +433,19 @@ function commands.stop(arg)
 	return 1;
 end
 
+function commands.restart(arg)
+	if arg[1] == "--help" then
+		show_usage([[restart]], [[Restart a running Prosody server]]);
+		return 1;
+	end
+	
+	local ret = commands.stop(arg);
+	if ret == 0 then
+		ret = commands.start(arg);
+	end
+	return ret;
+end
+
 -- ejabberdctl compatibility
 
 function commands.register(arg)
@@ -480,6 +499,36 @@ function commands.unregister(arg)
 	return 1;
 end
 
+local http_errors = {
+	[404] = "Plugin not found, did you type the address correctly?"
+	};
+
+function commands.addplugin(arg)
+	if not arg[1] or arg[1] == "--help" then
+		show_usage("addplugin URL", "Download and install a plugin from a URL");
+		return 1;
+	end
+	local url = arg[1];
+	if url:match("^http://") then
+		local http = require "socket.http";
+		show_message("Fetching...");
+		local code, err = http.request(url);
+		if not code or not tostring(err):match("^[23]") then
+			show_message("Failed: "..(http_errors[err] or ("HTTP error "..err)));
+			return 1;
+		end
+		if url:match("%.lua$") then
+			local ok, err = datamanager.store(url:match("/mod_([^/]+)$"), "*", "plugins", {code});
+			if not ok then
+				show_message("Failed to save to data store: "..err);
+				return 1;
+			end
+		end
+		show_message("Saved. Don't forget to load the module using the config file or admin console!");
+	else
+		show_message("Sorry, I don't understand how to fetch plugins from there.");
+	end
+end
 
 ---------------------
 
@@ -530,8 +579,8 @@ if not commands[command] then -- Show help for all commands
 	print("");
 	print("Where COMMAND may be one of:\n");
 
-	local hidden_commands = require "util.set".new{ "register", "unregister" };
-	local commands_order = { "adduser", "passwd", "deluser" };
+	local hidden_commands = require "util.set".new{ "register", "unregister", "addplugin" };
+	local commands_order = { "adduser", "passwd", "deluser", "start", "stop", "restart" };
 
 	local done = {};
 
