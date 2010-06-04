@@ -111,45 +111,56 @@ end
 
 -- End of session methods --
 
-function xmppclient.onincoming(conn, data)
-	local session = sessions[conn];
-	if not session then
-		session = sm_new_session(conn);
-		sessions[conn] = session;
-
-		session.log("info", "Client connected");
-		
-		-- Client is using legacy SSL (otherwise mod_tls sets this flag)
-		if conn:ssl() then
-			session.secure = true;
-		end
-		
-		if opt_keepalives ~= nil then
-			conn:setoption("keepalive", opt_keepalives);
-		end
-		
-		session.close = session_close;
-		
-		local stream = new_xmpp_stream(session, stream_callbacks);
-		session.stream = stream;
-		
+function xmppclient.onconnect(conn)
+	local session = sm_new_session(conn);
+	sessions[conn] = session;
+	
+	session.log("info", "Client connected");
+	
+	-- Client is using legacy SSL (otherwise mod_tls sets this flag)
+	if conn:ssl() then
+		session.secure = true;
+	end
+	
+	if opt_keepalives ~= nil then
+		conn:setoption("keepalive", opt_keepalives);
+	end
+	
+	session.close = session_close;
+	
+	local stream = new_xmpp_stream(session, stream_callbacks);
+	session.stream = stream;
+	
+	session.notopen = true;
+	
+	function session.reset_stream()
 		session.notopen = true;
-		
-		function session.reset_stream()
-			session.notopen = true;
-			session.stream:reset();
-		end
-		
-		function session.data(data)
+		session.stream:reset();
+	end
+	
+	local filter = session.filter;
+	function session.data(data)
+		data = filter("bytes/in", data);
+		if data then
 			local ok, err = stream:feed(data);
 			if ok then return; end
 			log("debug", "Received invalid XML (%s) %d bytes: %s", tostring(err), #data, data:sub(1, 300):gsub("[\r\n]+", " "):gsub("[%z\1-\31]", "_"));
 			session:close("xml-not-well-formed");
 		end
-		
-		session.dispatch_stanza = stream_callbacks.handlestanza;
 	end
-	if data then
+	
+	local handlestanza = stream_callbacks.handlestanza;
+	function session.dispatch_stanza(session, stanza)
+		stanza = filter("stanzas/in", stanza);
+		if stanza then
+			return handlestanza(session, stanza);
+		end
+	end
+end
+
+function xmppclient.onincoming(conn, data)
+	local session = sessions[conn];
+	if session then
 		session.data(data);
 	end
 end
