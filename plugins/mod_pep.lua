@@ -16,7 +16,6 @@ local is_contact_subscribed = require "core.rostermanager".is_contact_subscribed
 local pairs, ipairs = pairs, ipairs;
 local next = next;
 local type = type;
-local load_roster = require "core.rostermanager".load_roster;
 local sha1 = require "util.hashes".sha1;
 local base64 = require "util.encodings".base64.encode;
 
@@ -40,8 +39,8 @@ module:add_feature("http://jabber.org/protocol/pubsub#publish");
 local function subscription_presence(user_bare, recipient)
 	local recipient_bare = jid_bare(recipient);
 	if (recipient_bare == user_bare) then return true end
-	local item = load_roster(jid_split(user_bare))[recipient_bare];
-	return item and (item.subscription == 'from' or item.subscription == 'both');
+	local username, host = jid_split(user_bare);
+	return is_contact_subscribed(username, host, recipient_bare);
 end
 
 local function publish(session, node, id, item)
@@ -118,27 +117,32 @@ module:hook("presence/bare", function(event)
 	-- inbound presence to bare JID recieved
 	local origin, stanza = event.origin, event.stanza;
 	local user = stanza.attr.to or (origin.username..'@'..origin.host);
+	local t = stanza.attr.type;
 
-	if not stanza.attr.to or subscription_presence(user, stanza.attr.from) then
-		local recipient = stanza.attr.from;
-		local current = recipients[user] and recipients[user][recipient];
-		local hash = get_caps_hash_from_presence(stanza, current);
-		if current == hash then return; end
-		if not hash then
-			if recipients[user] then recipients[user][recipient] = nil; end
-		else
-			recipients[user] = recipients[user] or {};
-			if hash_map[hash] then
-				recipients[user][recipient] = hash_map[hash];
-				publish_all(user, recipient, origin);
+	if not t then -- available presence
+		if not stanza.attr.to or subscription_presence(user, stanza.attr.from) then
+			local recipient = stanza.attr.from;
+			local current = recipients[user] and recipients[user][recipient];
+			local hash = get_caps_hash_from_presence(stanza, current);
+			if current == hash then return; end
+			if not hash then
+				if recipients[user] then recipients[user][recipient] = nil; end
 			else
-				recipients[user][recipient] = hash;
-				origin.send(
-					st.stanza("iq", {from=stanza.attr.to, to=stanza.attr.from, id="disco", type="get"})
-						:query("http://jabber.org/protocol/disco#info")
-				);
+				recipients[user] = recipients[user] or {};
+				if hash_map[hash] then
+					recipients[user][recipient] = hash_map[hash];
+					publish_all(user, recipient, origin);
+				else
+					recipients[user][recipient] = hash;
+					origin.send(
+						st.stanza("iq", {from=stanza.attr.to, to=stanza.attr.from, id="disco", type="get"})
+							:query("http://jabber.org/protocol/disco#info")
+					);
+				end
 			end
 		end
+	elseif t == "unavailable" then
+		if recipients[user] then recipients[user][stanza.attr.from] = nil; end
 	end
 end, 10);
 
@@ -285,8 +289,8 @@ module:hook("account-disco-info", function(event)
 end);
 
 module:hook("account-disco-items", function(event)
-	local session, stanza = event.session, event.stanza;
-	local bare = session.username..'@'..session.host;
+	local stanza = event.stanza;
+	local bare = stanza.attr.to;
 	local user_data = data[bare];
 
 	if user_data then
