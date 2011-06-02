@@ -9,8 +9,10 @@
 
 local plugin_dir = CFG_PLUGINDIR or "./plugins/";
 
-local io_open = io.open;
-local loadstring = loadstring;
+local io_open, os_time = io.open, os.time;
+local loadstring, pairs = loadstring, pairs;
+
+local datamanager = require "util.datamanager";
 
 module "pluginloader"
 
@@ -22,13 +24,16 @@ local function load_file(name)
 	return content, name;
 end
 
-function load_resource(plugin, resource)
+function load_resource(plugin, resource, loader)
 	if not resource then
 		resource = "mod_"..plugin..".lua";
 	end
-	local content, err = load_file(plugin.."/"..resource);
-	if not content then content, err = load_file(resource); end
+	loader = loader or load_file;
+
+	local content, err = loader(plugin.."/"..resource);
+	if not content then content, err = loader(resource); end
 	-- TODO add support for packed plugins
+	
 	return content, err;
 end
 

@@ -21,13 +21,20 @@ local next = next;
 local t_insert = table.insert;
 local append = require "util.serialization".append;
 local path_separator = "/"; if os.getenv("WINDIR") then path_separator = "\\" end
-local lfs_mkdir = require "lfs".mkdir;
+local lfs = require "lfs";
+local raw_mkdir;
+
+if prosody.platform == "posix" then
+	raw_mkdir = require "util.pposix".mkdir; -- Doesn't trample on umask
+else
+	raw_mkdir = lfs.mkdir;
+end
 
 module "datamanager"
 
 ---- utils -----
 local encode, decode;
-do 
+do
 	local urlcodes = setmetatable({}, { __index = function (t, k) t[k] = char(tonumber("0x"..k)); return t[k]; end });
 
 	decode = function (s)
@@ -43,7 +50,7 @@ local _mkdir = {};
 local function mkdir(path)
 	path = path:gsub("/", path_separator); -- TODO as an optimization, do this during path creation rather than here
 	if not _mkdir[path] then
-		lfs_mkdir(path);
+		raw_mkdir(path);
 		_mkdir[path] = true;
 	end
 	return path;
@@ -88,7 +95,7 @@ end
 
 function getpath(username, host, datastore, ext, create)
 	ext = ext or "dat";
-	host = host and encode(host);
+	host = (host and encode(host)) or "_global";
 	username = username and encode(username);
 	if username then
 		if create then mkdir(mkdir(mkdir(data_path).."/"..host).."/"..datastore); end
@@ -105,14 +112,21 @@ end
 function load(username, host, datastore)
 	local data, ret = loadfile(getpath(username, host, datastore));
 	if not data then
-		log("debug", "Failed to load "..datastore.." storage ('"..ret.."') for user: "..(username or "nil").."@"..(host or "nil"));
-		return nil;
+		local mode = lfs.attributes(getpath(username, host, datastore), "mode");
+		if not mode then
+			log("debug", "Failed to load "..datastore.." storage ('"..ret.."') for user: "..(username or "nil").."@"..(host or "nil"));
+			return nil;
+		else -- file exists, but can't be read
+			-- TODO more detailed error checking and logging?
+			log("error", "Failed to load "..datastore.." storage ('"..ret.."') for user: "..(username or "nil").."@"..(host or "nil"));
+			return nil, "Error reading storage";
+		end
 	end
 	setfenv(data, {});
 	local success, ret = pcall(data);
 	if not success then
 		log("error", "Unable to load "..datastore.." storage ('"..ret.."') for user: "..(username or "nil").."@"..(host or "nil"));
-		return nil;
+		return nil, "Error reading storage";
 	end
 	return ret;
 end
@@ -131,7 +145,7 @@ function store(username, host, datastore, data)
 	local f, msg = io_open(getpath(username, host, datastore, nil, true), "w+");
 	if not f then
 		log("error", "Unable to write to "..datastore.." storage ('"..msg.."') for user: "..(username or "nil").."@"..(host or "nil"));
-		return;
+		return nil, "Error saving to storage";
 	end
 	f:write("return ");
 	append(f, data);

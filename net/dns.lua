@@ -532,14 +532,19 @@ function resolver:adddefaultnameservers()    -- - - - -  adddefaultnameservers
 		if not self.server or #self.server == 0 then
 			-- TODO log warning about no nameservers, adding opendns servers as fallback
 			self:addnameserver("208.67.222.222");
-			self:addnameserver("208.67.220.220") ; 	
+			self:addnameserver("208.67.220.220");
 		end
 	else -- posix
 		local resolv_conf = io.open("/etc/resolv.conf");
 		if resolv_conf then
 			for line in resolv_conf:lines() do
-				local address = line:gsub("#.*$", ""):match('^%s*nameserver%s+(%d+%.%d+%.%d+%.%d+)%s*$');
-				if address then self:addnameserver(address) end
+				line = line:gsub("#.*$", "")
+					:match('^%s*nameserver%s+(.*)%s*$');
+				if line then
+					line:gsub("%f[%d.](%d+%.%d+%.%d+%.%d+)%f[^%d.]", function (address)
+						self:addnameserver(address)
+					end);
+				end
 			end
 		end
 		if not self.server or #self.server == 0 then
@@ -727,7 +732,7 @@ function resolver:receive(rset)    -- - - - - - - - - - - - - - - - -  receive
 			local packet = sock:receive();
 			if packet then
 				response = self:decode(packet);
-				if response and self.active[response.header.id] 
+				if response and self.active[response.header.id]
 					and self.active[response.header.id][response.question.raw] then
 					--print('received response');
 					--self.print(response);
@@ -796,7 +801,7 @@ function resolver:feed(sock, packet)
 				set(self.wanted, q.class, q.type, q.name, nil);
 			end
 		end
-	end 
+	end
 
 	return response;
 end
@@ -846,7 +851,13 @@ end
 
 function resolver:lookup(qname, qtype, qclass)    -- - - - - - - - - -  lookup
 	self:query (qname, qtype, qclass)
-	while self:pulse() do socket.select(self.socket, nil, 4); end
+	while self:pulse() do
+           local recvt = {}
+           for i, s in ipairs(self.socket) do
+              recvt[i] = s
+           end
+           socket.select(recvt, nil, 4)
+        end
 	--print(self.cache);
 	return self:peek(qname, qtype, qclass);
 end
@@ -913,11 +924,6 @@ end
 -- module api ------------------------------------------------------ module api
 
 
-local function resolve(func, ...)    -- - - - - - - - - - - - - - resolver_get
-	return func(dns._resolver, ...);
-end
-
-
 function dns.resolver ()    -- - - - - - - - - - - - - - - - - - - - - resolver
 	-- this function seems to be redundant with resolver.new ()
 
@@ -928,37 +934,35 @@ function dns.resolver ()    -- - - - - - - - - - - - - - - - - - - - - resolver
 	return r;
 end
 
+local _resolver = dns.resolver();
+dns._resolver = _resolver;
 
 function dns.lookup(...)    -- - - - - - - - - - - - - - - - - - - - -  lookup
-	return resolve(resolver.lookup, ...);
+	return _resolver:lookup(...);
 end
 
-
 function dns.purge(...)    -- - - - - - - - - - - - - - - - - - - - - -  purge
-	return resolve(resolver.purge, ...);
+	return _resolver:purge(...);
 end
 
 function dns.peek(...)    -- - - - - - - - - - - - - - - - - - - - - - -  peek
-	return resolve(resolver.peek, ...);
+	return _resolver:peek(...);
 end
-
 
 function dns.query(...)    -- - - - - - - - - - - - - - - - - - - - - -  query
-	return resolve(resolver.query, ...);
+	return _resolver:query(...);
 end
 
-function dns.feed(...)    -- - - - - - - - - - - - - - - - - - - - - -  feed
-	return resolve(resolver.feed, ...);
+function dns.feed(...)    -- - - - - - - - - - - - - - - - - - - - - - -  feed
+	return _resolver:feed(...);
 end
 
-function dns.cancel(...)   -- - - - - - - - - - - - - - - - - - - - - -  cancel
-	return resolve(resolver.cancel, ...);
+function dns.cancel(...)  -- - - - - - - - - - - - - - - - - - - - - -  cancel
+	return _resolver:cancel(...);
 end
 
-function dns:socket_wrapper_set(...)    -- - - - - - - - -  socket_wrapper_set
-	return resolve(resolver.socket_wrapper_set, ...);
+function dns.socket_wrapper_set(...)    -- - - - - - - - -  socket_wrapper_set
+	return _resolver:socket_wrapper_set(...);
 end
-
-dns._resolver = dns.resolver();
 
 return dns;
