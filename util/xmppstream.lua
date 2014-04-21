@@ -241,6 +241,25 @@ function new(session, stream_callbacks, stanza_size_limit)
 	local parser = new_parser(handlers, ns_separator, false);
 	local parse = parser.parse;
 
+	function session.open_stream(session, from, to)
+		local send = session.sends2s or session.send;
+
+		local attr = {
+			["xmlns:stream"] = "http://etherx.jabber.org/streams",
+			["xml:lang"] = "en",
+			xmlns = stream_callbacks.default_ns,
+			version = session.version and (session.version > 0 and "1.0" or nil),
+			id = session.streamid or "",
+			from = from or session.host, to = to,
+		};
+		if session.stream_attrs then
+			session:stream_attrs(from, to, attr)
+		end
+		send("<?xml version='1.0'?>");
+		send(st.stanza("stream:stream", attr):top_tag());
+		return true;
+	end
+
 	return {
 		reset = function ()
 			parser = new_parser(handlers, ns_separator, false);
