@@ -1,6 +1,6 @@
 -- Prosody IM
 -- Copyright (C) 2009-2012 Tobias Markmann
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -26,7 +26,7 @@ end
 
 module:hook("stream-features", function(event)
 	local origin, features = event.origin, event.features;
-	if not origin.compressed and (origin.type == "c2s" or origin.type == "s2sin" or origin.type == "s2sout") then
+	if not origin.compressed and origin.type == "c2s" then
 		-- FIXME only advertise compression support when TLS layer has no compression enabled
 		features:add_child(compression_stream_feature);
 	end
@@ -35,7 +35,7 @@ end);
 module:hook("s2s-stream-features", function(event)
 	local origin, features = event.origin, event.features;
 	-- FIXME only advertise compression support when TLS layer has no compression enabled
-	if not origin.compressed and (origin.type == "c2s" or origin.type == "s2sin" or origin.type == "s2sout") then
+	if not origin.compressed and origin.type == "s2sin" then
 		features:add_child(compression_stream_feature);
 	end
 end);
@@ -43,13 +43,13 @@ end);
 -- Hook to activate compression if remote server supports it.
 module:hook_stanza(xmlns_stream, "features",
 		function (session, stanza)
-			if not session.compressed and (session.type == "c2s" or session.type == "s2sin" or session.type == "s2sout") then
+			if not session.compressed and session.type == "s2sout" then
 				-- does remote server support compression?
-				local comp_st = stanza:child_with_name("compression");
+				local comp_st = stanza:get_child("compression", xmlns_compression_feature);
 				if comp_st then
 					-- do we support the mechanism
-					for a in comp_st:children() do
-						local algorithm = a[1]
+					for a in comp_st:childtags("method") do
+						local algorithm = a:get_text();
 						if algorithm == "zlib" then
 							session.sends2s(st.stanza("compress", {xmlns=xmlns_compression_protocol}):tag("method"):text("zlib"))
 							session.log("debug", "Enabled compression using zlib.")
@@ -103,7 +103,7 @@ local function setup_compression(session, deflate_stream)
 			return;
 		end
 		return compressed;
-	end);	
+	end);
 end
 
 -- setup decompression for a stream
@@ -131,13 +131,13 @@ module:hook("stanza/http://jabber.org/protocol/compress:compressed", function(ev
 		-- create deflate and inflate streams
 		local deflate_stream = get_deflate_stream(session);
 		if not deflate_stream then return true; end
-		
+
 		local inflate_stream = get_inflate_stream(session);
 		if not inflate_stream then return true; end
-		
+
 		-- setup compression for session.w
 		setup_compression(session, deflate_stream);
-			
+
 		-- setup decompression for session.data
 		setup_decompression(session, inflate_stream);
 		session:reset_stream();
@@ -158,29 +158,28 @@ module:hook("stanza/http://jabber.org/protocol/compress:compress", function(even
 			session.log("debug", "Client tried to establish another compression layer.");
 			return true;
 		end
-		
+
 		-- checking if the compression method is supported
-		local method = stanza:child_with_name("method");
-		method = method and (method[1] or "");
+		local method = stanza:get_child_text("method");
 		if method == "zlib" then
 			session.log("debug", "zlib compression enabled.");
-			
+
 			-- create deflate and inflate streams
 			local deflate_stream = get_deflate_stream(session);
 			if not deflate_stream then return true; end
-			
+
 			local inflate_stream = get_inflate_stream(session);
 			if not inflate_stream then return true; end
-			
+
 			(session.sends2s or session.send)(st.stanza("compressed", {xmlns=xmlns_compression_protocol}));
 			session:reset_stream();
-			
+
 			-- setup compression for session.w
 			setup_compression(session, deflate_stream);
-				
+
 			-- setup decompression for session.data
 			setup_decompression(session, inflate_stream);
-			
+
 			session.compressed = true;
 		elseif method then
 			session.log("debug", "%s compression selected, but we don't support it.", tostring(method));

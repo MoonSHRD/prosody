@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -135,6 +135,12 @@ function route_to_new_session(event)
 	return true;
 end
 
+local function keepalive(event)
+	return event.session.sends2s(' ');
+end
+
+module:hook("s2s-read-timeout", keepalive, -1);
+
 function module.add_host(module)
 	if module:get_option_boolean("disallow_s2s", false) then
 		module:log("warn", "The 'disallow_s2s' config option is deprecated, please see http://prosody.im/doc/s2s#disabling");
@@ -143,15 +149,23 @@ function module.add_host(module)
 	module:hook("route/remote", route_to_existing_session, -1);
 	module:hook("route/remote", route_to_new_session, -10);
 	module:hook("s2s-authenticated", make_authenticated, -1);
+	module:hook("s2s-read-timeout", keepalive, -1);
+	module:hook_stanza("http://etherx.jabber.org/streams", "features", function (session, stanza)
+		if session.type == "s2sout" then
+			-- Stream is authenticated and we are seem to be done with feature negotiation,
+			-- so the stream is ready for stanzas.  RFC 6120 Section 4.3
+			mark_connected(session);
+		end
+	end, -1);
 end
 
 -- Stream is authorised, and ready for normal stanzas
 function mark_connected(session)
 	local sendq, send = session.sendq, session.sends2s;
-	
+
 	local from, to = session.from_host, session.to_host;
-	
-	session.log("info", "%s s2s connection %s->%s complete", session.direction, from, to);
+
+	session.log("info", "%s s2s connection %s->%s complete", session.direction:gsub("^.", string.upper), from, to);
 
 	local event_data = { session = session };
 	if session.type == "s2sout" then
@@ -166,7 +180,7 @@ function mark_connected(session)
 		fire_global_event("s2sin-established", event_data);
 		hosts[to].events.fire_event("s2sin-established", event_data);
 	end
-	
+
 	if session.direction == "outgoing" then
 		if sendq then
 			session.log("debug", "sending %d queued stanzas across new outgoing connection to %s", #sendq, session.to_host);
@@ -176,7 +190,7 @@ function mark_connected(session)
 			end
 			session.sendq = nil;
 		end
-		
+
 		session.ip_hosts = nil;
 		session.srv_hosts = nil;
 	end
@@ -211,14 +225,17 @@ function make_authenticated(event)
 		return false;
 	end
 	session.log("debug", "connection %s->%s is now authenticated for %s", session.from_host, session.to_host, host);
-	
-	mark_connected(session);
-	
+
+	if (session.type == "s2sout" and session.external_auth ~= "succeeded") or session.type == "s2sin" then
+		-- Stream either used dialback for authentication or is an incoming stream.
+		mark_connected(session);
+	end
+
 	return true;
 end
 
 --- Helper to check that a session peer's certificate is valid
-local function check_cert_status(session)
+function check_cert_status(session)
 	local host = session.direction == "outgoing" and session.to_host or session.from_host
 	local conn = session.conn:socket()
 	local cert
@@ -270,25 +287,28 @@ local xmlns_xmpp_streams = "urn:ietf:params:xml:ns:xmpp-streams";
 
 function stream_callbacks.streamopened(session, attr)
 	local send = session.sends2s;
-	
+
 	session.version = tonumber(attr.version) or 0;
-	
+
 	-- TODO: Rename session.secure to session.encrypted
 	if session.secure == false then
 		session.secure = true;
+		session.encrypted = true;
 
-		-- Check if TLS compression is used
 		local sock = session.conn:socket();
 		if sock.info then
-			session.compressed = sock:info"compression";
-		elseif sock.compression then
-			session.compressed = sock:compression(); --COMPAT mw/luasec-hg
+			local info = sock:info();
+			(session.log or log)("info", "Stream encrypted (%s with %s)", info.protocol, info.cipher);
+			session.compressed = info.compression;
+		else
+			(session.log or log)("info", "Stream encrypted");
+			session.compressed = sock.compression and sock:compression(); --COMPAT mw/luasec-hg
 		end
 	end
 
 	if session.direction == "incoming" then
 		-- Send a reply stream header
-		
+
 		-- Validate to/from
 		local to, from = nameprep(attr.to), nameprep(attr.from);
 		if not to and attr.to then -- COMPAT: Some servers do not reliably set 'to' (especially on stream restarts)
@@ -299,7 +319,7 @@ function stream_callbacks.streamopened(session, attr)
 			session:close({ condition = "improper-addressing", text = "Invalid 'from' address" });
 			return;
 		end
-		
+
 		-- Set session.[from/to]_host if they have not been set already and if
 		-- this session isn't already authenticated
 		if session.type == "s2sin_unauthed" and from and not session.from_host then
@@ -314,10 +334,10 @@ function stream_callbacks.streamopened(session, attr)
 			session:close({ condition = "improper-addressing", text = "New stream 'to' attribute does not match original" });
 			return;
 		end
-		
+
 		-- For convenience we'll put the sanitised values into these variables
 		to, from = session.to_host, session.from_host;
-		
+
 		session.streamid = uuid_gen();
 		(session.log or log)("debug", "Incoming s2s received %s", st.stanza("stream:stream", attr):top_tag());
 		if to then
@@ -352,13 +372,13 @@ function stream_callbacks.streamopened(session, attr)
 		session:open_stream(session.to_host, session.from_host)
 		if session.version >= 1.0 then
 			local features = st.stanza("stream:features");
-			
+
 			if to then
 				hosts[to].events.fire_event("s2s-stream-features", { origin = session, features = features });
 			else
 				(session.log or log)("warn", "No 'to' on stream header from %s means we can't offer any features", from or session.ip or "unknown host");
 			end
-			
+
 			log("debug", "Sending stream features: %s", tostring(features));
 			send(features);
 		end
@@ -386,7 +406,7 @@ function stream_callbacks.streamopened(session, attr)
 			end
 		end
 		session.send_buffer = nil;
-	
+
 		-- If server is pre-1.0, don't wait for features, just do dialback
 		if session.version < 1.0 then
 			if not session.dialback_verifying then
@@ -479,10 +499,10 @@ local function session_close(session, reason, remote_reason)
 
 		session.sends2s("</stream:stream>");
 		function session.sends2s() return false; end
-		
+
 		local reason = remote_reason or (reason and (reason.text or reason.condition)) or reason;
-		session.log("info", "%s s2s stream %s->%s closed: %s", session.direction, session.from_host or "(unknown host)", session.to_host or "(unknown host)", reason or "stream closed");
-		
+		session.log("info", "%s s2s stream %s->%s closed: %s", session.direction:gsub("^.", string.upper), session.from_host or "(unknown host)", session.to_host or "(unknown host)", reason or "stream closed");
+
 		-- Authenticated incoming stream may still be sending us stanzas, so wait for </stream:stream> from remote
 		local conn = session.conn;
 		if reason == nil and not session.notopen and session.type == "s2sin" then
@@ -500,46 +520,51 @@ local function session_close(session, reason, remote_reason)
 	end
 end
 
-function session_open_stream(session, from, to)
-	local attr = {
-		["xmlns:stream"] = 'http://etherx.jabber.org/streams',
-		xmlns = 'jabber:server',
-		version = session.version and (session.version > 0 and "1.0" or nil),
-		["xml:lang"] = 'en',
-		id = session.streamid,
-		from = from, to = to,
-	}
+function session_stream_attrs(session, from, to, attr)
 	if not from or (hosts[from] and hosts[from].modules.dialback) then
 		attr["xmlns:db"] = 'jabber:server:dialback';
 	end
-
-	session.sends2s("<?xml version='1.0'?>");
-	session.sends2s(st.stanza("stream:stream", attr):top_tag());
-	return true;
 end
 
 -- Session initialization logic shared by incoming and outgoing
 local function initialize_session(session)
 	local stream = new_xmpp_stream(session, stream_callbacks);
+	local log = session.log or log;
 	session.stream = stream;
-	
+
 	session.notopen = true;
-		
+
 	function session.reset_stream()
 		session.notopen = true;
 		session.stream:reset();
 	end
 
-	session.open_stream = session_open_stream;
-	
-	local filter = session.filter;
+	session.stream_attrs = session_stream_attrs;
+
+	local filter = initialize_filters(session);
+	local conn = session.conn;
+	local w = conn.write;
+
+	function session.sends2s(t)
+		log("debug", "sending: %s", t.top_tag and t:top_tag() or t:match("^[^>]*>?"));
+		if t.name then
+			t = filter("stanzas/out", t);
+		end
+		if t then
+			t = filter("bytes/out", tostring(t));
+			if t then
+				return w(conn, t);
+			end
+		end
+	end
+
 	function session.data(data)
 		data = filter("bytes/in", data);
 		if data then
 			local ok, err = stream:feed(data);
 			if ok then return; end
-			(session.log or log)("warn", "Received invalid XML: %s", data);
-			(session.log or log)("warn", "Problem was: %s", err);
+			log("warn", "Received invalid XML: %s", data);
+			log("warn", "Problem was: %s", err);
 			session:close("not-well-formed");
 		end
 	end
@@ -550,6 +575,8 @@ local function initialize_session(session)
 	function session.dispatch_stanza(session, stanza)
 		return handlestanza(session, stanza);
 	end
+
+	module:fire_event("s2s-created", { session = session });
 
 	add_task(connect_timeout, function ()
 		if session.type == "s2sin" or session.type == "s2sout" then
@@ -571,26 +598,11 @@ function listener.onconnect(conn)
 		session = s2s_new_incoming(conn);
 		sessions[conn] = session;
 		session.log("debug", "Incoming s2s connection");
-
-		local filter = initialize_filters(session);
-		local w = conn.write;
-		session.sends2s = function (t)
-			log("debug", "sending: %s", t.top_tag and t:top_tag() or t:match("^([^>]*>?)"));
-			if t.name then
-				t = filter("stanzas/out", t);
-			end
-			if t then
-				t = filter("bytes/out", tostring(t));
-				if t then
-					return w(conn, t);
-				end
-			end
-		end
-	
 		initialize_session(session);
 	else -- Outgoing session connected
 		session:open_stream(session.from_host, session.to_host);
 	end
+	session.ip = conn:ip();
 end
 
 function listener.onincoming(conn, data)
@@ -599,7 +611,7 @@ function listener.onincoming(conn, data)
 		session.data(data);
 	end
 end
-	
+
 function listener.onstatus(conn, status)
 	if status == "ssl-handshake-complete" then
 		local session = sessions[conn];
@@ -617,7 +629,6 @@ function listener.ondisconnect(conn, err)
 		if err and session.direction == "outgoing" and session.notopen then
 			(session.log or log)("debug", "s2s connection attempt failed: %s", err);
 			if s2sout.attempt_connection(session, err) then
-				(session.log or log)("debug", "...so we're going to try another target");
 				return; -- Session lives for now
 			end
 		end
@@ -626,8 +637,14 @@ function listener.ondisconnect(conn, err)
 	end
 end
 
+function listener.onreadtimeout(conn)
+	local session = sessions[conn];
+	if session then
+		return (hosts[session.host] or prosody).events.fire_event("s2s-read-timeout", { session = session });
+	end
+end
+
 function listener.register_outgoing(conn, session)
-	session.direction = "outgoing";
 	sessions[conn] = session;
 	initialize_session(session);
 end
@@ -641,7 +658,7 @@ function check_auth_policy(event)
 	elseif must_secure and insecure_domains[host] then
 		must_secure = false;
 	end
-	
+
 	if must_secure and (session.cert_chain_status ~= "valid" or session.cert_identity_status ~= "valid") then
 		module:log("warn", "Forbidding insecure connection to/from %s", host or session.ip or "(unknown host)");
 		if session.direction == "incoming" then
