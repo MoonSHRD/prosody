@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -128,15 +128,7 @@ function syslog_sink_maker(config)
 end
 require "core.loggingmanager".register_sink_type("syslog", syslog_sink_maker);
 
-local daemonize = module:get_option("daemonize");
-if daemonize == nil then
-	local no_daemonize = module:get_option("no_daemonize"); --COMPAT w/ 0.5
-	daemonize = not no_daemonize;
-	if no_daemonize ~= nil then
-		module:log("warn", "The 'no_daemonize' option is now replaced by 'daemonize'");
-		module:log("warn", "Update your config from 'no_daemonize = %s' to 'daemonize = %s'", tostring(no_daemonize), tostring(daemonize));
-	end
-end
+local daemonize = module:get_option("daemonize", prosody.installed);
 
 local function remove_log_sinks()
 	local lm = require "core.loggingmanager";
@@ -183,7 +175,7 @@ if signal.signal then
 		prosody.reload_config();
 		prosody.reopen_logfiles();
 	end);
-	
+
 	signal.signal("SIGINT", function ()
 		module:log("info", "Received SIGINT");
 		prosody.unlock_globals();
