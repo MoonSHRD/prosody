@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -12,8 +12,6 @@ local st = require "util.stanza";
 local sm_bind_resource = require "core.sessionmanager".bind_resource;
 local sm_make_authenticated = require "core.sessionmanager".make_authenticated;
 local base64 = require "util.encodings".base64;
-
-local cert_verify_identity = require "util.x509".verify_identity;
 
 local usermanager_get_sasl_handler = require "core.usermanager".get_sasl_handler;
 local tostring = tostring;
@@ -28,15 +26,15 @@ local xmlns_bind ='urn:ietf:params:xml:ns:xmpp-bind';
 
 local function build_reply(status, ret, err_msg)
 	local reply = st.stanza(status, {xmlns = xmlns_sasl});
-	if status == "challenge" then
-		--log("debug", "CHALLENGE: %s", ret or "");
-		reply:text(base64.encode(ret or ""));
-	elseif status == "failure" then
+	if status == "failure" then
 		reply:tag(ret):up();
 		if err_msg then reply:tag("text"):text(err_msg); end
-	elseif status == "success" then
-		--log("debug", "SUCCESS: %s", ret or "");
-		reply:text(base64.encode(ret or ""));
+	elseif status == "challenge" or status == "success" then
+		if ret == "" then
+			reply:text("=")
+		elseif ret then
+			reply:text(base64.encode(ret));
+		end
 	else
 		module:log("error", "Unknown sasl status: %s", status);
 	end
@@ -99,11 +97,9 @@ module:hook_stanza(xmlns_sasl, "failure", function (session, stanza)
 	module:log("info", "SASL EXTERNAL with %s failed", session.to_host)
 	-- TODO: Log the failure reason
 	session.external_auth = "failed"
+	session:close();
+	return true;
 end, 500)
-
-module:hook_stanza(xmlns_sasl, "failure", function (session, stanza)
-	-- TODO: Dialback wasn't loaded.  Do something useful.
-end, 90)
 
 module:hook_stanza("http://etherx.jabber.org/streams", "features", function (session, stanza)
 	if session.type ~= "s2sout_unauthed" or not session.secure then return; end
@@ -124,71 +120,52 @@ module:hook_stanza("http://etherx.jabber.org/streams", "features", function (ses
 end, 150);
 
 local function s2s_external_auth(session, stanza)
+	if session.external_auth ~= "offered" then return end -- Unexpected request
+
 	local mechanism = stanza.attr.mechanism;
 
+	if mechanism ~= "EXTERNAL" then
+		session.sends2s(build_reply("failure", "invalid-mechanism"));
+		return true;
+	end
+
 	if not session.secure then
-		if mechanism == "EXTERNAL" then
-			session.sends2s(build_reply("failure", "encryption-required"))
-		else
-			session.sends2s(build_reply("failure", "invalid-mechanism"))
-		end
+		session.sends2s(build_reply("failure", "encryption-required"));
 		return true;
 	end
 
-	if mechanism ~= "EXTERNAL" or session.cert_chain_status ~= "valid" then
-		session.sends2s(build_reply("failure", "invalid-mechanism"))
-		return true;
-	end
-
-	local text = stanza[1]
+	local text = stanza[1];
 	if not text then
-		session.sends2s(build_reply("failure", "malformed-request"))
-		return true
-	end
-
-	-- Either the value is "=" and we've already verified the external
-	-- cert identity, or the value is a string and either matches the
-	-- from_host (
-
-	text = base64.decode(text)
-	if not text then
-		session.sends2s(build_reply("failure", "incorrect-encoding"))
+		session.sends2s(build_reply("failure", "malformed-request"));
 		return true;
 	end
 
-	if session.cert_identity_status == "valid" then
-		if text ~= "" and text ~= session.from_host then
-			session.sends2s(build_reply("failure", "invalid-authzid"))
-			return true
-		end
-	else
-		if text == "" then
-			session.sends2s(build_reply("failure", "invalid-authzid"))
-			return true
-		end
-
-		local cert = session.conn:socket():getpeercertificate()
-		if (cert_verify_identity(text, "xmpp-server", cert)) then
-			session.cert_identity_status = "valid"
-		else
-			session.cert_identity_status = "invalid"
-			session.sends2s(build_reply("failure", "invalid-authzid"))
-			return true
-		end
+	text = base64.decode(text);
+	if not text then
+		session.sends2s(build_reply("failure", "incorrect-encoding"));
+		return true;
 	end
 
-	session.external_auth = "succeeded"
-
-	if not session.from_host then
-		session.from_host = text;
+	-- The text value is either "" or equals session.from_host
+	if not ( text == "" or text == session.from_host ) then
+		session.sends2s(build_reply("failure", "invalid-authzid"));
+		return true;
 	end
-	session.sends2s(build_reply("success"))
 
-	local domain = text ~= "" and text or session.from_host;
-	module:log("info", "Accepting SASL EXTERNAL identity from %s", domain);
-	module:fire_event("s2s-authenticated", { session = session, host = domain });
+	-- We've already verified the external cert identity before offering EXTERNAL
+	if session.cert_chain_status ~= "valid" or session.cert_identity_status ~= "valid" then
+		session.sends2s(build_reply("failure", "not-authorized"));
+		session:close();
+		return true;
+	end
+
+	-- Success!
+	session.external_auth = "succeeded";
+	session.sends2s(build_reply("success"));
+	module:log("info", "Accepting SASL EXTERNAL identity from %s", session.from_host);
+	module:fire_event("s2s-authenticated", { session = session, host = session.from_host });
 	session:reset_stream();
-	return true
+	return true;
 end
 
 module:hook("stanza/urn:ietf:params:xml:ns:xmpp-sasl:auth", function(event)
@@ -242,6 +219,16 @@ module:hook("stream-features", function(event)
 			return;
 		end
 		origin.sasl_handler = usermanager_get_sasl_handler(module.host, origin);
+		if origin.encrypted then
+			-- check wether LuaSec has the nifty binding to the function needed for tls-unique
+			-- FIXME: would be nice to have this check only once and not for every socket
+			if origin.conn:socket().getpeerfinished and origin.sasl_handler.add_cb_handler then
+				origin.sasl_handler:add_cb_handler("tls-unique", function(self)
+					return self.userdata:getpeerfinished();
+				end);
+				origin.sasl_handler["userdata"] = origin.conn:socket();
+			end
+		end
 		local mechanisms = st.stanza("mechanisms", mechanisms_attr);
 		for mechanism in pairs(origin.sasl_handler:mechanisms()) do
 			if mechanism ~= "PLAIN" or origin.secure or allow_unencrypted_plain_auth then
@@ -258,10 +245,10 @@ end);
 module:hook("s2s-stream-features", function(event)
 	local origin, features = event.origin, event.features;
 	if origin.secure and origin.type == "s2sin_unauthed" then
-		-- Offer EXTERNAL if chain is valid and either we didn't validate
-		-- the identity or it passed.
-		if origin.cert_chain_status == "valid" and origin.cert_identity_status ~= "invalid" then --TODO: Configurable
-			module:log("debug", "Offering SASL EXTERNAL")
+		-- Offer EXTERNAL only if both chain and identity is valid.
+		if origin.cert_chain_status == "valid" and origin.cert_identity_status == "valid" then
+			module:log("debug", "Offering SASL EXTERNAL");
+			origin.external_auth = "offered"
 			features:tag("mechanisms", { xmlns = xmlns_sasl })
 				:tag("mechanism"):text("EXTERNAL")
 			:up():up();
@@ -274,7 +261,7 @@ module:hook("iq/self/urn:ietf:params:xml:ns:xmpp-bind:bind", function(event)
 	local resource;
 	if stanza.attr.type == "set" then
 		local bind = stanza.tags[1];
-		resource = bind:child_with_name("resource");
+		resource = bind:get_child("resource");
 		resource = resource and #resource.tags == 0 and resource[1] or nil;
 	end
 	local success, err_type, err, err_msg = sm_bind_resource(origin, resource);
