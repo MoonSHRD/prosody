@@ -1,7 +1,7 @@
--- 
+--
 -- server.lua by blastbeat of the luadch project
 -- Re-used here under the MIT/X Consortium License
--- 
+--
 -- Modifications (C) 2008-2010 Matthew Wild, Waqas Hussain
 --
 
@@ -145,7 +145,7 @@ _tcpbacklog = 128 -- some kind of hint to the OS
 _maxsendlen = 51000 * 1024 -- max len of send buffer
 _maxreadlen = 25000 * 1024 -- max len of read buffer
 
-_checkinterval = 1200000 -- interval in secs to check idle clients
+_checkinterval = 30 -- interval in secs to check idle clients
 _sendtimeout = 60000 -- allowed send idle time in secs
 _readtimeout = 6 * 60 * 60 -- allowed read idle time in secs
 
@@ -284,6 +284,7 @@ wrapconnection = function( server, listeners, socket, ip, serverport, clientport
 	local status = listeners.onstatus
 	local disconnect = listeners.ondisconnect
 	local drain = listeners.ondrain
+	local onreadtimeout = listeners.onreadtimeout;
 	local detach = listeners.ondetach
 
 	local bufferqueue = { } -- buffer array
@@ -313,6 +314,8 @@ wrapconnection = function( server, listeners, socket, ip, serverport, clientport
 	handler.disconnect = function( )
 		return disconnect
 	end
+	handler.onreadtimeout = onreadtimeout;
+
 	handler.setlistener = function( self, listeners )
 		if detach then
 			detach(self) -- Notify listener that it is no longer responsible for this connection
@@ -321,6 +324,7 @@ wrapconnection = function( server, listeners, socket, ip, serverport, clientport
 		disconnect = listeners.ondisconnect
 		status = listeners.onstatus
 		drain = listeners.ondrain
+		handler.onreadtimeout = listeners.onreadtimeout
 		detach = listeners.ondetach
 	end
 	handler.getstats = function( )
@@ -564,6 +568,9 @@ wrapconnection = function( server, listeners, socket, ip, serverport, clientport
 						_ = status and status( handler, "ssl-handshake-complete" )
 						if self.autostart_ssl and listeners.onconnect then
 							listeners.onconnect(self);
+							if bufferqueuelen ~= 0 then
+								_sendlistlen = addsocket(_sendlist, client, _sendlistlen)
+							end
 						end
 						_readlistlen = addsocket(_readlist, client, _readlistlen)
 						return true
@@ -613,7 +620,7 @@ wrapconnection = function( server, listeners, socket, ip, serverport, clientport
 			shutdown = id
 			_socketlist[ socket ] = handler
 			_readlistlen = addsocket(_readlist, socket, _readlistlen)
-			
+
 			-- remove traces of the old socket
 			_readlistlen = removesocket( _readlist, oldsocket, _readlistlen )
 			_sendlistlen = removesocket( _sendlist, oldsocket, _sendlistlen )
@@ -701,7 +708,7 @@ local function link(sender, receiver, buffersize)
 			sender_locked = nil;
 		end
 	end
-	
+
 	local _readbuffer = sender.readbuffer;
 	function sender.readbuffer()
 		_readbuffer();
@@ -870,16 +877,18 @@ loop = function(once) -- this is the main loop of the program
 			_starttime = _currenttime
 			for handler, timestamp in pairs( _writetimes ) do
 				if os_difftime( _currenttime - timestamp ) > _sendtimeout then
-					--_writetimes[ handler ] = nil
 					handler.disconnect( )( handler, "send timeout" )
 					handler:force_close()	 -- forced disconnect
 				end
 			end
 			for handler, timestamp in pairs( _readtimes ) do
 				if os_difftime( _currenttime - timestamp ) > _readtimeout then
-					--_readtimes[ handler ] = nil
-					handler.disconnect( )( handler, "read timeout" )
-					handler:close( )	-- forced disconnect?
+					if not(handler.onreadtimeout) or handler:onreadtimeout() ~= true then
+						handler.disconnect( )( handler, "read timeout" )
+						handler:close( )	-- forced disconnect?
+					else
+						_readtimes[ handler ] = _currenttime -- reset timer
+					end
 				end
 			end
 		end
@@ -940,9 +949,9 @@ local addclient = function( address, port, listeners, pattern, sslctx )
 	client:settimeout( 0 )
 	_, err = client:connect( address, port )
 	if err then -- try again
-		local handler = wrapclient( client, address, port, listeners )
+		return wrapclient( client, address, port, listeners, pattern, sslctx )
 	else
-		wrapconnection( nil, listeners, client, address, port, "clientport", pattern, sslctx )
+		return wrapconnection( nil, listeners, client, address, port, "clientport", pattern, sslctx )
 	end
 end
 
@@ -972,7 +981,7 @@ return {
 
 	addclient = addclient,
 	wrapclient = wrapclient,
-	
+
 	loop = loop,
 	link = link,
 	step = step,
