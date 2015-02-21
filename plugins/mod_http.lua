@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2012 Matthew Wild
 -- Copyright (C) 2008-2012 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -45,6 +45,11 @@ local function get_base_path(host_module, app_name, default_app_path)
 		:gsub("%$(%w+)", { host = host_module.host });
 end
 
+local function redir_handler(event)
+	event.response.headers.location = event.request.path.."/";
+	return 301;
+end
+
 local ports_by_scheme = { http = 80, https = 443, };
 
 -- Helper to deduce a module's external URL
@@ -79,6 +84,7 @@ function module.add_host(module)
 		local app_name = event.item.name;
 		local default_app_path = event.item.default_path or "/"..app_name;
 		local app_path = get_base_path(module, app_name, default_app_path);
+		module:log("debug", "Serving '%s' at %s", app_name, module:http_url(app_name, app_path));
 		if not app_name then
 			-- TODO: Link to docs
 			module:log("error", "HTTP app has no 'name', add one or use module:provides('http', app)");
@@ -99,6 +105,9 @@ function module.add_host(module)
 						local path = event.request.path:sub(base_path_len);
 						return _handler(event, path);
 					end;
+					module:hook_object_event(server, event_name:sub(1, -3), redir_handler, -1);
+				elseif event_name:sub(-1, -1) == "/" then
+					module:hook_object_event(server, event_name:sub(1, -2), redir_handler, -1);
 				end
 				if not app_handlers[event_name] then
 					app_handlers[event_name] = handler;
@@ -111,7 +120,7 @@ function module.add_host(module)
 			end
 		end
 	end
-	
+
 	local function http_app_removed(event)
 		local app_handlers = apps[event.item.name];
 		apps[event.item.name] = nil;
@@ -119,7 +128,7 @@ function module.add_host(module)
 			module:unhook_object_event(server, event, handler);
 		end
 	end
-	
+
 	module:handle_items("http-provider", http_app_added, http_app_removed);
 
 	server.add_host(host);
@@ -142,7 +151,13 @@ module:provides("net", {
 	listener = server.listener;
 	default_port = 5281;
 	encryption = "ssl";
-	ssl_config = { verify = "none" };
+	ssl_config = {
+		verify = {
+			peer = false,
+			client_once = false,
+			"none",
+		}
+	};
 	multiplex = {
 		pattern = "^[A-Z]";
 	};
