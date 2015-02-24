@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -10,8 +10,8 @@ local tostring, setmetatable = tostring, setmetatable;
 local pairs, next= pairs, next;
 
 local hosts = hosts;
-local full_sessions = full_sessions;
-local bare_sessions = bare_sessions;
+local full_sessions = prosody.full_sessions;
+local bare_sessions = prosody.bare_sessions;
 
 local logger = require "util.logger";
 local log = logger.init("sessionmanager");
@@ -44,7 +44,7 @@ function new_session(conn)
 	session.ip = conn:ip();
 	local conn_name = "c2s"..tostring(session):match("[a-f0-9]+$");
 	session.log = logger.init(conn_name);
-		
+
 	return session;
 end
 
@@ -67,25 +67,26 @@ function retire_session(session)
 
 	function session.send(data) log("debug", "Discarding data sent to resting session: %s", tostring(data)); return false; end
 	function session.data(data) log("debug", "Discarding data received from resting session: %s", tostring(data)); end
+	session.thread = { run = function (_, data) return session.data(data) end };
 	return setmetatable(session, resting_session);
 end
 
 function destroy_session(session, err)
 	(session.log or log)("debug", "Destroying session for %s (%s@%s)%s", session.full_jid or "(unknown)", session.username or "(unknown)", session.host or "(unknown)", err and (": "..err) or "");
 	if session.destroyed then return; end
-	
+
 	-- Remove session/resource from user's session list
 	if session.full_jid then
 		local host_session = hosts[session.host];
-		
+
 		-- Allow plugins to prevent session destruction
 		if host_session.events.fire_event("pre-resource-unbind", {session=session, error=err}) then
 			return;
 		end
-		
+
 		host_session.sessions[session.username].sessions[session.resource] = nil;
 		full_sessions[session.full_jid] = nil;
-		
+
 		if not next(host_session.sessions[session.username].sessions) then
 			log("debug", "All resources of %s are now offline", session.username);
 			host_session.sessions[session.username] = nil;
@@ -94,7 +95,7 @@ function destroy_session(session, err)
 
 		host_session.events.fire_event("resource-unbind", {session=session, error=err});
 	end
-	
+
 	retire_session(session);
 end
 
@@ -116,10 +117,20 @@ function bind_resource(session, resource)
 	if session.resource then return nil, "cancel", "already-bound", "Cannot bind multiple resources on a single connection"; end
 	-- We don't support binding multiple resources
 
+	local event_payload = { session = session, resource = resource };
+	if hosts[session.host].events.fire_event("pre-resource-bind", event_payload) == false then
+		local err = event_payload.error;
+		if err then return nil, err.type, err.condition, err.text; end
+		return nil, "cancel", "not-allowed";
+	else
+		-- In case a plugin wants to poke at it
+		resource = event_payload.resource;
+	end
+
 	resource = resourceprep(resource);
 	resource = resource ~= "" and resource or uuid_generate();
 	--FIXME: Randomly-generated resources must be unique per-user, and never conflict with existing
-	
+
 	if not hosts[session.host].sessions[session.username] then
 		local sessions = { sessions = {} };
 		hosts[session.host].sessions[session.username] = sessions;
@@ -156,12 +167,12 @@ function bind_resource(session, resource)
 			end
 		end
 	end
-	
+
 	session.resource = resource;
 	session.full_jid = session.username .. '@' .. session.host .. '/' .. resource;
 	hosts[session.host].sessions[session.username].sessions[resource] = session;
 	full_sessions[session.full_jid] = session;
-	
+
 	local err;
 	session.roster, err = rm_load_roster(session.username, session.host);
 	if err then
@@ -176,9 +187,9 @@ function bind_resource(session, resource)
 		session.log("error", "Roster loading failed: %s", err);
 		return nil, "cancel", "internal-server-error", "Error loading roster";
 	end
-	
+
 	hosts[session.host].events.fire_event("resource-bind", {session=session});
-	
+
 	return true;
 end
 
