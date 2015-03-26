@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -35,7 +35,7 @@ function missingdep(name, sources, msg)
 	print("");
 end
 
--- COMPAT w/pre-0.8 Debian: The Debian config file used to use 
+-- COMPAT w/pre-0.8 Debian: The Debian config file used to use
 -- util.ztact, which has been removed from Prosody in 0.8. This
 -- is to log an error for people who still use it, so they can
 -- update their configs.
@@ -58,9 +58,9 @@ function check_dependencies()
 	end
 
 	local fatal;
-	
+
 	local lxp = softreq "lxp"
-	
+
 	if not lxp then
 		missingdep("luaexpat", {
 				["Debian/Ubuntu"] = "sudo apt-get install liblua5.1-expat0";
@@ -69,9 +69,9 @@ function check_dependencies()
 			});
 		fatal = true;
 	end
-	
+
 	local socket = softreq "socket"
-	
+
 	if not socket then
 		missingdep("luasocket", {
 				["Debian/Ubuntu"] = "sudo apt-get install liblua5.1-socket2";
@@ -80,7 +80,7 @@ function check_dependencies()
 			});
 		fatal = true;
 	end
-	
+
 	local lfs, err = softreq "lfs"
 	if not lfs then
 		missingdep("luafilesystem", {
@@ -90,9 +90,9 @@ function check_dependencies()
 		 	});
 		fatal = true;
 	end
-	
+
 	local ssl = softreq "ssl"
-	
+
 	if not ssl then
 		missingdep("LuaSec", {
 				["Debian/Ubuntu"] = "http://prosody.im/download/start#debian_and_ubuntu";
@@ -100,7 +100,7 @@ function check_dependencies()
 				["Source"] = "http://www.inf.puc-rio.br/~brunoos/luasec/";
 			}, "SSL/TLS support will not be available");
 	end
-	
+
 	local encodings, err = softreq "util.encodings"
 	if not encodings then
 		if err:match("not found") then
