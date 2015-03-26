@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -15,12 +15,16 @@ local fire_event = prosody and prosody.events.fire_event or function () end;
 
 local envload = require"util.envload".envload;
 local deps = require"util.dependencies";
+local resolve_relative_path = require"util.paths".resolve_relative_path;
+local glob_to_pattern = require"util.paths".glob_to_pattern;
 local path_sep = package.config:sub(1,1);
 
 local have_encodings, encodings = pcall(require, "util.encodings");
 local nameprep = have_encodings and encodings.stringprep.nameprep or function (host) return host:lower(); end
 
 module "configmanager"
+
+_M.resolve_relative_path = resolve_relative_path; -- COMPAT
 
 local parsers = {};
 
@@ -67,41 +71,6 @@ function _M.set(host, key, value, _oldvalue)
 		key, value = value, _oldvalue; --COMPAT with code that still uses "core"
 	end
 	return set(config, host, key, value);
-end
-
--- Helper function to resolve relative paths (needed by config)
-do
-	function resolve_relative_path(parent_path, path)
-		if path then
-			-- Some normalization
-			parent_path = parent_path:gsub("%"..path_sep.."+$", "");
-			path = path:gsub("^%.%"..path_sep.."+", "");
-			
-			local is_relative;
-			if path_sep == "/" and path:sub(1,1) ~= "/" then
-				is_relative = true;
-			elseif path_sep == "\\" and (path:sub(1,1) ~= "/" and (path:sub(2,3) ~= ":\\" and path:sub(2,3) ~= ":/")) then
-				is_relative = true;
-			end
-			if is_relative then
-				return parent_path..path_sep..path;
-			end
-		end
-		return path;
-	end	
-end
-
--- Helper function to convert a glob to a Lua pattern
-local function glob_to_pattern(glob)
-	return "^"..glob:gsub("[%p*?]", function (c)
-		if c == "*" then
-			return ".*";
-		elseif c == "?" then
-			return ".";
-		else
-			return "%"..c;
-		end
-	end).."$";
 end
 
 function load(filename, format)
@@ -170,7 +139,7 @@ do
 					set(config, env.__currenthost or "*", k, v);
 				end
 		});
-		
+
 		rawset(env, "__currenthost", "*") -- Default is global
 		function env.VirtualHost(name)
 			name = nameprep(name);
@@ -189,7 +158,7 @@ do
 			end;
 		end
 		env.Host, env.host = env.VirtualHost, env.VirtualHost;
-		
+
 		function env.Component(name)
 			name = nameprep(name);
 			if rawget(config, name) and rawget(config[name], "defined") and not rawget(config[name], "component_module") then
@@ -206,7 +175,7 @@ do
 					set(config, name or "*", option_name, option_value);
 				end
 			end
-	
+
 			return function (module)
 					if type(module) == "string" then
 						set(config, name, "component_module", module);
@@ -216,7 +185,7 @@ do
 				end
 		end
 		env.component = env.Component;
-		
+
 		function env.Include(file)
 			if file:match("[*?]") then
 				local lfs = deps.softreq "lfs";
@@ -249,26 +218,26 @@ do
 			end
 		end
 		env.include = env.Include;
-		
+
 		function env.RunScript(file)
 			return dofile(resolve_relative_path(config_file:gsub("[^"..path_sep.."]+$", ""), file));
 		end
-		
+
 		local chunk, err = envload(data, "@"..config_file, env);
-		
+
 		if not chunk then
 			return nil, err;
 		end
-		
+
 		local ok, err = pcall(chunk);
-		
+
 		if not ok then
 			return nil, err;
 		end
-		
+
 		return true;
 	end
-	
+
 end
 
 return _M;
