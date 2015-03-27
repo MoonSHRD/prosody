@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -13,7 +13,6 @@ local disco_items = require "util.multitable".new();
 local NULL = {};
 
 local jid_split = require "util.jid".split;
-local uuid_gen = require "util.uuid".generate;
 
 local log = require "util.logger".init("hostmanager");
 
@@ -35,7 +34,7 @@ local hosts_loaded_once;
 local function load_enabled_hosts(config)
 	local defined_hosts = config or configmanager.getconfig();
 	local activated_any_host;
-	
+
 	for host, host_config in pairs(defined_hosts) do
 		if host ~= "*" and host_config.enabled ~= false then
 			if not host_config.component_module then
@@ -44,11 +43,11 @@ local function load_enabled_hosts(config)
 			activate(host, host_config);
 		end
 	end
-	
+
 	if not activated_any_host then
 		log("error", "No active VirtualHost entries in the config file. This may cause unexpected behaviour as no modules will be loaded.");
 	end
-	
+
 	prosody_events.fire_event("hosts-activated", defined_hosts);
 	hosts_loaded_once = true;
 end
@@ -74,7 +73,6 @@ function activate(host, host_config)
 		host = host;
 		s2sout = {};
 		events = events_new();
-		dialback_secret = configmanager.get(host, "dialback_secret") or uuid_gen();
 		send = host_send;
 		modules = {};
 	};
@@ -93,7 +91,7 @@ function activate(host, host_config)
 			log("warn", "%s: Option '%s' has no effect for virtual hosts - put it in the server-wide section instead", host, option_name);
 		end
 	end
-	
+
 	log((hosts_loaded_once and "info") or "debug", "Activated host: %s", host);
 	prosody_events.fire_event("host-activated", host);
 	return true;
@@ -104,11 +102,11 @@ function deactivate(host, reason)
 	if not host_session then return nil, "The host "..tostring(host).." is not activated"; end
 	log("info", "Deactivating host: %s", host);
 	prosody_events.fire_event("host-deactivating", { host = host, host_session = host_session, reason = reason });
-	
+
 	if type(reason) ~= "table" then
 		reason = { condition = "host-gone", text = tostring(reason or "This server has stopped serving "..host) };
 	end
-	
+
 	-- Disconnect local users, s2s connections
 	-- TODO: These should move to mod_c2s and mod_s2s (how do they know they're being unloaded and not reloaded?)
 	if host_session.sessions then
