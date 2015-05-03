@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -13,9 +13,10 @@ local log = require "util.logger".init("rostermanager");
 
 local pairs = pairs;
 local tostring = tostring;
+local type = type;
 
 local hosts = hosts;
-local bare_sessions = bare_sessions;
+local bare_sessions = prosody.bare_sessions;
 
 local datamanager = require "util.datamanager"
 local um_user_exists = require "core.usermanager".user_exists;
@@ -54,7 +55,7 @@ function remove_from_roster(session, jid)
 end
 
 function roster_push(username, host, jid)
-	local roster = jid and jid ~= "pending" and hosts[host] and hosts[host].sessions[username] and hosts[host].sessions[username].roster;
+	local roster = jid and hosts[host] and hosts[host].sessions[username] and hosts[host].sessions[username].roster;
 	if roster then
 		local item = hosts[host].sessions[username].roster[jid];
 		local stanza = st.iq({type="set"});
@@ -79,6 +80,21 @@ function roster_push(username, host, jid)
 	end
 end
 
+local function roster_metadata(roster, err)
+	local metadata = roster[false];
+	if not metadata then
+		metadata = { broken = err or nil };
+		roster[false] = metadata;
+	end
+	if roster.pending and type(roster.pending.subscription) ~= "string" then
+		metadata.pending = roster.pending;
+		roster.pending = nil;
+	elseif not metadata.pending then
+		metadata.pending = {};
+	end
+	return metadata;
+end
+
 function load_roster(username, host)
 	local jid = username.."@"..host;
 	log("debug", "load_roster: asked for: %s", jid);
@@ -94,13 +110,13 @@ function load_roster(username, host)
 	local data, err = datamanager.load(username, host, "roster");
 	roster = data or {};
 	if user then user.roster = roster; end
-	if not roster[false] then roster[false] = { broken = err or nil }; end
+	roster_metadata(roster, err);
 	if roster[jid] then
 		roster[jid] = nil;
 		log("warn", "roster for %s has a self-contact", jid);
 	end
 	if not err then
-		hosts[host].events.fire_event("roster-load", username, host, roster);
+		hosts[host].events.fire_event("roster-load", { username = username, host = host, roster = roster });
 	end
 	return roster, err;
 end
@@ -120,15 +136,11 @@ function save_roster(username, host, roster)
 		--end
 	end
 	if roster then
-		local metadata = roster[false];
-		if not metadata then
-			metadata = {};
-			roster[false] = metadata;
-		end
+		local metadata = roster_metadata(roster);
 		if metadata.version ~= true then
 			metadata.version = (metadata.version or 0) + 1;
 		end
-		if roster[false].broken then return nil, "Not saving broken roster" end
+		if metadata.broken then return nil, "Not saving broken roster" end
 		return datamanager.store(username, host, "roster", roster);
 	end
 	log("warn", "save_roster: user had no roster to save");
@@ -176,7 +188,7 @@ function process_inbound_unsubscribe(username, host, jid)
 	local item = roster[jid];
 	local changed = nil;
 	if is_contact_pending_in(username, host, jid) then
-		roster.pending[jid] = nil; -- TODO maybe delete roster.pending if empty?
+		roster[false].pending[jid] = nil;
 		changed = true;
 	end
 	if item then
@@ -213,16 +225,15 @@ end
 
 function is_contact_pending_in(username, host, jid)
 	local roster = load_roster(username, host);
-	return roster.pending and roster.pending[jid];
+	return roster[false].pending[jid];
 end
-function set_contact_pending_in(username, host, jid, pending)
+function set_contact_pending_in(username, host, jid)
 	local roster = load_roster(username, host);
 	local item = roster[jid];
 	if item and (item.subscription == "from" or item.subscription == "both") then
 		return; -- false
 	end
-	if not roster.pending then roster.pending = {}; end
-	roster.pending[jid] = true;
+	roster[false].pending[jid] = true;
 	return save_roster(username, host, roster);
 end
 function is_contact_pending_out(username, host, jid)
@@ -272,8 +283,7 @@ function subscribed(username, host, jid)
 		else -- subscription == to
 			item.subscription = "both";
 		end
-		roster.pending[jid] = nil;
-		-- TODO maybe remove roster.pending if empty
+		roster[false].pending[jid] = nil;
 		return save_roster(username, host, roster);
 	end -- TODO else implement optional feature pre-approval (ask = subscribed)
 end
@@ -282,7 +292,7 @@ function unsubscribed(username, host, jid)
 	local item = roster[jid];
 	local pending = is_contact_pending_in(username, host, jid);
 	if pending then
-		roster.pending[jid] = nil; -- TODO maybe delete roster.pending if empty?
+		roster[false].pending[jid] = nil;
 	end
 	local subscribed;
 	if item then

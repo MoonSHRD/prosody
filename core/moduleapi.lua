@@ -1,23 +1,26 @@
 -- Prosody IM
 -- Copyright (C) 2008-2012 Matthew Wild
 -- Copyright (C) 2008-2012 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
 
 local config = require "core.configmanager";
-local modulemanager = require "modulemanager"; -- This is necessary to avoid require loops
+local modulemanager; -- This gets set from modulemanager
 local array = require "util.array";
 local set = require "util.set";
 local logger = require "util.logger";
 local pluginloader = require "util.pluginloader";
 local timer = require "util.timer";
+local resolve_relative_path = require"util.paths".resolve_relative_path;
+local measure = require "core.statsmanager".measure;
 
 local t_insert, t_remove, t_concat = table.insert, table.remove, table.concat;
 local error, setmetatable, type = error, setmetatable, type;
 local ipairs, pairs, select, unpack = ipairs, pairs, select, unpack;
 local tonumber, tostring = tonumber, tostring;
+local require = require;
 
 local prosody = prosody;
 local hosts = prosody.hosts;
@@ -44,7 +47,7 @@ function api:get_host()
 end
 
 function api:get_host_type()
-	return self.host ~= "*" and hosts[self.host].type or nil;
+	return (self.host == "*" and "global") or hosts[self.host].type or "local";
 end
 
 function api:set_global()
@@ -74,7 +77,7 @@ end
 function api:has_identity(category, type, name)
 	for _, id in ipairs(self:get_host_items("identity")) do
 		if id.category == category and id.type == type and id.name == name then
-			return true; 
+			return true;
 		end
 	end
 	return false;
@@ -112,6 +115,22 @@ function api:hook_tag(xmlns, name, handler, priority)
 	return self:hook("stanza/"..(xmlns and (xmlns..":") or "")..name, function (data) return handler(data.origin, data.stanza, data); end, priority);
 end
 api.hook_stanza = api.hook_tag; -- COMPAT w/pre-0.9
+
+function api:unhook(event, handler)
+	return self:unhook_object_event((hosts[self.host] or prosody).events, event, handler);
+end
+
+function api:wrap_object_event(events_object, event, handler)
+	return self:hook_object_event(assert(events_object.wrappers, "no wrappers"), event, handler);
+end
+
+function api:wrap_event(event, handler)
+	return self:wrap_object_event((hosts[self.host] or prosody).events, event, handler);
+end
+
+function api:wrap_global(event, handler)
+	return self:hook_object_event(prosody.events, event, handler, priority);
+end
 
 function api:require(lib)
 	local f, n = pluginloader.load_code(self.name, lib..".lib.lua", self.environment);
@@ -252,21 +271,21 @@ function api:get_option_array(name, ...)
 	if value == nil then
 		return nil;
 	end
-	
+
 	if type(value) ~= "table" then
 		return array{ value }; -- Assume any non-list is a single-item list
 	end
-	
+
 	return array():append(value); -- Clone
 end
 
 function api:get_option_set(name, ...)
 	local value = self:get_option_array(name, ...);
-	
+
 	if value == nil then
 		return nil;
 	end
-	
+
 	return set.new(value);
 end
 
@@ -356,12 +375,40 @@ function api:get_directory()
 end
 
 function api:load_resource(path, mode)
-	path = config.resolve_relative_path(self:get_directory(), path);
+	path = resolve_relative_path(self:get_directory(), path);
 	return io.open(path, mode);
 end
 
 function api:open_store(name, type)
-	return storagemanager.open(self.host, name or self.name, type);
+	return require"core.storagemanager".open(self.host, name or self.name, type);
+end
+
+function api:measure(name, type)
+	return measure(type, "/"..self.host.."/mod_"..self.name.."/"..name);
+end
+
+function api:measure_object_event(events_object, event_name, stat_name)
+	local m = self:measure(stat_name or event_name, "duration");
+	local function handler(handlers, event_name, event_data)
+		local finished = m();
+		local ret = handlers(event_name, event_data);
+		finished();
+		return ret;
+	end
+	return self:hook_object_event(events_object, event_name, handler);
+end
+
+function api:measure_event(event_name, stat_name)
+	return self:hook_object_event((hosts[self.host] or prosody).events.wrappers, event_name, handler);
+end
+
+function api:measure_global_event(event_name, stat_name)
+	return self:hook_object_event(prosody.events.wrappers, event_name, handler);
+end
+
+function api.init(mm)
+	modulemanager = mm;
+	return api;
 end
 
 return api;
