@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -45,16 +45,16 @@ local logging_levels = { "debug", "info", "warn", "error" }
 -- This function is called automatically when a new sink type is added [see apply_sink_rules()]
 local function add_rule(sink_config)
 	local sink_maker = log_sink_types[sink_config.to];
-	if sink_maker then
-		-- Create sink
-		local sink = sink_maker(sink_config);
-		
-		-- Set sink for all chosen levels
-		for level in pairs(get_levels(sink_config.levels or logging_levels)) do
-			logger.add_level_sink(level, sink);
-		end
-	else
-		-- No such sink type
+	if not sink_maker then
+		return; -- No such sink type
+	end
+
+	-- Create sink
+	local sink = sink_maker(sink_config);
+
+	-- Set sink for all chosen levels
+	for level in pairs(get_levels(sink_config.levels or logging_levels)) do
+		logger.add_level_sink(level, sink);
 	end
 end
 
@@ -63,7 +63,7 @@ end
 -- the log_sink_types table.
 function apply_sink_rules(sink_type)
 	if type(logging_config) == "table" then
-		
+
 		for _, level in ipairs(logging_levels) do
 			if type(logging_config[level]) == "string" then
 				local value = logging_config[level];
@@ -82,7 +82,7 @@ function apply_sink_rules(sink_type)
 				end
 			end
 		end
-		
+
 		for _, sink_config in ipairs(logging_config) do
 			if (type(sink_config) == "table" and sink_config.to == sink_type) then
 				add_rule(sink_config);
@@ -128,7 +128,7 @@ function get_levels(criteria, set)
 			end
 		end
 	end
-	
+
 	for _, level in ipairs(criteria) do
 		set[level] = true;
 	end
@@ -138,12 +138,12 @@ end
 -- Initialize config, etc. --
 function reload_logging()
 	local old_sink_types = {};
-	
+
 	for name, sink_maker in pairs(log_sink_types) do
 		old_sink_types[name] = sink_maker;
 		log_sink_types[name] = nil;
 	end
-	
+
 	logger.reset();
 
 	local debug_mode = config.get("*", "debug");
@@ -155,12 +155,12 @@ function reload_logging()
 	default_timestamp = "%b %d %H:%M:%S";
 
 	logging_config = config.get("*", "log") or default_logging;
-	
-	
+
+
 	for name, sink_maker in pairs(old_sink_types) do
 		log_sink_types[name] = sink_maker;
 	end
-	
+
 	prosody.events.fire_event("logging-reloaded");
 end
 
@@ -177,13 +177,13 @@ end
 -- Column width for "source" (used by stdout and console)
 local sourcewidth = 20;
 
-function log_sink_types.stdout(config)
-	local timestamps = config.timestamps;
-	
+function log_sink_types.stdout(sink_config)
+	local timestamps = sink_config.timestamps;
+
 	if timestamps == true then
 		timestamps = default_timestamp; -- Default format
 	end
-	
+
 	return function (name, level, message, ...)
 		sourcewidth = math_max(#name+2, sourcewidth);
 		local namelen = #name;
@@ -200,20 +200,20 @@ end
 
 do
 	local do_pretty_printing = true;
-	
+
 	local logstyles = {};
 	if do_pretty_printing then
 		logstyles["info"] = getstyle("bold");
 		logstyles["warn"] = getstyle("bold", "yellow");
 		logstyles["error"] = getstyle("bold", "red");
 	end
-	function log_sink_types.console(config)
+	function log_sink_types.console(sink_config)
 		-- Really if we don't want pretty colours then just use plain stdout
 		if not do_pretty_printing then
-			return log_sink_types.stdout(config);
+			return log_sink_types.stdout(sink_config);
 		end
-		
-		local timestamps = config.timestamps;
+
+		local timestamps = sink_config.timestamps;
 
 		if timestamps == true then
 			timestamps = default_timestamp; -- Default format
@@ -222,7 +222,7 @@ do
 		return function (name, level, message, ...)
 			sourcewidth = math_max(#name+2, sourcewidth);
 			local namelen = #name;
-			
+
 			if timestamps then
 				io_write(os_date(timestamps), " ");
 			end
@@ -240,15 +240,15 @@ do
 end
 
 local empty_function = function () end;
-function log_sink_types.file(config)
-	local log = config.filename;
+function log_sink_types.file(sink_config)
+	local log = sink_config.filename;
 	local logfile = io_open(log, "a+");
 	if not logfile then
 		return empty_function;
 	end
 	local write, flush = logfile.write, logfile.flush;
 
-	local timestamps = config.timestamps;
+	local timestamps = sink_config.timestamps;
 
 	if timestamps == nil or timestamps == true then
 		timestamps = default_timestamp; -- Default format
