@@ -1,13 +1,13 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
 
 local setmetatable = setmetatable;
-local pairs, ipairs = pairs, ipairs;
+local ipairs = ipairs;
 local tostring, type, next = tostring, type, next;
 local t_concat = table.concat;
 local st = require "util.stanza";
@@ -32,13 +32,13 @@ function form_t.form(layout, data, formtype)
 	if layout.instructions then
 		form:tag("instructions"):text(layout.instructions):up();
 	end
-	for n, field in ipairs(layout) do
+	for _, field in ipairs(layout) do
 		local field_type = field.type or "text-single";
 		-- Add field tag
 		form:tag("field", { type = field_type, var = field.name, label = field.label });
 
 		local value = (data and data[field.name]) or field.value;
-		
+
 		if value then
 			-- Add value, depending on type
 			if field_type == "hidden" then
@@ -102,11 +102,11 @@ function form_t.form(layout, data, formtype)
 			end
 			form:up();
 		end
-		
+
 		if field.required then
 			form:tag("required"):up();
 		end
-		
+
 		-- Jump back up to list of fields
 		form:up();
 	end

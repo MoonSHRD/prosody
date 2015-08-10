@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -11,11 +11,9 @@ local type = type;
 local tostring = tostring;
 local t_insert = table.insert;
 local t_concat = table.concat;
-local error = error;
 local pairs = pairs;
 local next = next;
 
-local loadstring = loadstring;
 local pcall = pcall;
 
 local debug_traceback = debug.traceback;

@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -49,11 +49,11 @@ local resting_session = { -- Resting, not dead
 		close = function (session)
 			session.log("debug", "Attempt to close already-closed session");
 		end;
-		filter = function (type, data) return data; end;
+		filter = function (type, data) return data; end; --luacheck: ignore 212/type
 	}; resting_session.__index = resting_session;
 
 function retire_session(session, reason)
-	local log = session.log or log;
+	local log = session.log or log; --luacheck: ignore 431/log
 	for k in pairs(session) do
 		if k ~= "log" and k ~= "id" and k ~= "conn" then
 			session[k] = nil;
@@ -71,14 +71,14 @@ end
 function destroy_session(session, reason)
 	if session.destroyed then return; end
 	(session.log or log)("debug", "Destroying "..tostring(session.direction).." session "..tostring(session.from_host).."->"..tostring(session.to_host)..(reason and (": "..reason) or ""));
-	
+
 	if session.direction == "outgoing" then
 		hosts[session.from_host].s2sout[session.to_host] = nil;
 		session:bounce_sendq(reason);
 	elseif session.direction == "incoming" then
 		incoming_s2s[session] = nil;
 	end
-	
+
 	local event_data = { session = session, reason = reason };
 	if session.type == "s2sout" then
 		fire_event("s2sout-destroyed", event_data);
@@ -91,7 +91,7 @@ function destroy_session(session, reason)
 			hosts[session.to_host].events.fire_event("s2sin-destroyed", event_data);
 		end
 	end
-	
+
 	retire_session(session, reason); -- Clean session until it is GC'd
 	return true;
 end

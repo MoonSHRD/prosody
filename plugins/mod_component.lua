@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -178,9 +178,7 @@ function stream_callbacks.streamopened(session, attr)
 	session.streamid = uuid_gen();
 	session.notopen = nil;
 	-- Return stream header
-	session.send("<?xml version='1.0'?>");
-	session.send(st.stanza("stream:stream", { xmlns=xmlns_component,
-			["xmlns:stream"]='http://etherx.jabber.org/streams', id=session.streamid, from=session.host }):top_tag());
+	session:open_stream();
 end
 
 function stream_callbacks.streamclosed(session)
