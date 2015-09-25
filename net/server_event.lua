@@ -157,8 +157,7 @@ function interface_mt:_start_ssl(call_onconnect) -- old socket will be destroyed
 		return false
 	end
 	self.conn:settimeout( 0 )  -- set non blocking
-	local handshakecallback = coroutine_wrap(
-	function( event )
+	local handshakecallback = coroutine_wrap(function( event )
 		local _, err
 		local attempt = 0
 		local maxattempt = cfg.MAX_HANDSHAKE_ATTEMPTS
@@ -392,11 +391,11 @@ function interface_mt:starttls(sslctx, call_onconnect)
 		self:_lock( true, true, true )  -- lock the interface, to not disturb the handshake
 		self.eventstarthandshake = addevent( base, nil, EV_TIMEOUT, self.startsslcallback, 0 )  -- add event to start handshake
 	else  -- wait until writebuffer is empty
-	self:_lock( true, true, false )
-	debug "ssl session delayed until writebuffer is empty..."
-end
-self.starttls = false;
-return true
+		self:_lock( true, true, false )
+		debug "ssl session delayed until writebuffer is empty..."
+	end
+	self.starttls = false;
+	return true
 end
 
 function interface_mt:setoption(option, value)
