@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -23,9 +23,9 @@ local escapes = {
 local unescapes = {};
 for k,v in pairs(escapes) do unescapes[v] = k; end
 
-module "jid"
+local _ENV = nil;
 
-local function _split(jid)
+local function split(jid)
 	if not jid then return; end
 	local node, nodepos = match(jid, "^([^@/]+)@()");
 	local host, hostpos = match(jid, "^([^@/]+)()", nodepos)
@@ -34,18 +34,13 @@ local function _split(jid)
 	if (not host) or ((not resource) and #jid >= hostpos) then return nil, nil, nil; end
 	return node, host, resource;
 end
-split = _split;
 
-function bare(jid)
-	local node, host = _split(jid);
-	if node and host then
-		return node.."@"..host;
-	end
-	return host;
+local function bare(jid)
+	return jid and match(jid, "^[^/]+");
 end
 
-local function _prepped_split(jid)
-	local node, host, resource = _split(jid);
+local function prepped_split(jid)
+	local node, host, resource = split(jid);
 	if host then
 		if sub(host, -1, -1) == "." then -- Strip empty root label
 			host = sub(host, 1, -2);
@@ -63,39 +58,29 @@ local function _prepped_split(jid)
 		return node, host, resource;
 	end
 end
-prepped_split = _prepped_split;
 
-function prep(jid)
-	local node, host, resource = _prepped_split(jid);
-	if host then
-		if node then
-			host = node .. "@" .. host;
-		end
-		if resource then
-			host = host .. "/" .. resource;
-		end
+local function join(node, host, resource)
+	if not host then return end
+	if node and resource then
+		return node.."@"..host.."/"..resource;
+	elseif node then
+		return node.."@"..host;
+	elseif resource then
+		return host.."/"..resource;
 	end
 	return host;
 end
 
-function join(node, host, resource)
-	if node and host and resource then
-		return node.."@"..host.."/"..resource;
-	elseif node and host then
-		return node.."@"..host;
-	elseif host and resource then
-		return host.."/"..resource;
-	elseif host then
-		return host;
-	end
-	return nil; -- Invalid JID
+local function prep(jid)
+	local node, host, resource = prepped_split(jid);
+	return join(node, host, resource);
 end
 
-function compare(jid, acl)
+local function compare(jid, acl)
 	-- compare jid to single acl rule
 	-- TODO compare to table of rules?
-	local jid_node, jid_host, jid_resource = _split(jid);
-	local acl_node, acl_host, acl_resource = _split(acl);
+	local jid_node, jid_host, jid_resource = split(jid);
+	local acl_node, acl_host, acl_resource = split(acl);
 	if ((acl_node ~= nil and acl_node == jid_node) or acl_node == nil) and
 		((acl_host ~= nil and acl_host == jid_host) or acl_host == nil) and
 		((acl_resource ~= nil and acl_resource == jid_resource) or acl_resource == nil) then
@@ -104,7 +89,16 @@ function compare(jid, acl)
 	return false
 end
 
-function escape(s) return s and (s:gsub(".", escapes)); end
-function unescape(s) return s and (s:gsub("\\%x%x", unescapes)); end
+local function escape(s) return s and (s:gsub(".", escapes)); end
+local function unescape(s) return s and (s:gsub("\\%x%x", unescapes)); end
 
-return _M;
+return {
+	split = split;
+	bare = bare;
+	prepped_split = prepped_split;
+	join = join;
+	prep = prep;
+	compare = compare;
+	escape = escape;
+	unescape = unescape;
+};

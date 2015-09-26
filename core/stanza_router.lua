@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -30,7 +30,7 @@ deprecated_warning"core_process_stanza";
 deprecated_warning"core_route_stanza";
 
 local valid_stanzas = { message = true, presence = true, iq = true };
-local function handle_unhandled_stanza(host, origin, stanza)
+local function handle_unhandled_stanza(host, origin, stanza) --luacheck: ignore 212/host
 	local name, xmlns, origin_type = stanza.name, stanza.attr.xmlns or "jabber:client", origin.type;
 	if xmlns == "jabber:client" and valid_stanzas[name] then
 		-- A normal stanza
@@ -46,7 +46,7 @@ local function handle_unhandled_stanza(host, origin, stanza)
 		if origin.send then
 			origin.send(st.error_reply(stanza, "cancel", "service-unavailable"));
 		end
-	elseif not((name == "features" or name == "error") and xmlns == "http://etherx.jabber.org/streams") then -- FIXME remove check once we handle S2S features
+	else
 		log("warn", "Unhandled %s stream element or stanza: %s; xmlns=%s: %s", origin_type, name, xmlns, tostring(stanza)); -- we didn't handle it
 		origin:close("unsupported-stanza-type");
 	end
@@ -199,7 +199,7 @@ function core_route_stanza(origin, stanza)
 	-- Auto-detect origin if not specified
 	origin = origin or hosts[from_host];
 	if not origin then return false; end
-	
+
 	if hosts[host] then
 		-- old stanza routing code removed
 		core_post_stanza(origin, stanza);
@@ -221,6 +221,8 @@ function core_route_stanza(origin, stanza)
 		end
 	end
 end
+
+--luacheck: ignore 122/prosody
 prosody.core_process_stanza = core_process_stanza;
 prosody.core_post_stanza = core_post_stanza;
 prosody.core_route_stanza = core_route_stanza;
