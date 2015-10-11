@@ -1,5 +1,5 @@
 
-local error, type, pairs = error, type, pairs;
+local type, pairs = type, pairs;
 local setmetatable = setmetatable;
 
 local config = require "core.configmanager";
@@ -11,11 +11,10 @@ local log = require "util.logger".init("storagemanager");
 
 local prosody = prosody;
 
-module("storagemanager")
+local _ENV = nil;
 
 local olddm = {}; -- maintain old datamanager, for backwards compatibility
 for k,v in pairs(datamanager) do olddm[k] = v; end
-_M.olddm = olddm;
 
 local null_storage_method = function () return false, "no data storage active"; end
 local null_storage_driver = setmetatable(
@@ -23,7 +22,7 @@ local null_storage_driver = setmetatable(
 		name = "null",
 		open = function (self) return self; end
 	}, {
-		__index = function (self, method)
+		__index = function (self, method) --luacheck: ignore 212
 			return null_storage_method;
 		end
 	}
@@ -31,13 +30,13 @@ local null_storage_driver = setmetatable(
 
 local stores_available = multitable.new();
 
-function initialize_host(host)
+local function initialize_host(host)
 	local host_session = hosts[host];
 	host_session.events.add_handler("item-added/storage-provider", function (event)
 		local item = event.item;
 		stores_available:set(host, item.name, item);
 	end);
-	
+
 	host_session.events.add_handler("item-removed/storage-provider", function (event)
 		local item = event.item;
 		stores_available:set(host, item.name, nil);
@@ -45,7 +44,7 @@ function initialize_host(host)
 end
 prosody.events.add_handler("host-activated", initialize_host, 101);
 
-function load_driver(host, driver_name)
+local function load_driver(host, driver_name)
 	if driver_name == "null" then
 		return null_storage_driver;
 	end
@@ -58,7 +57,7 @@ function load_driver(host, driver_name)
 	return stores_available:get(host, driver_name);
 end
 
-function get_driver(host, store)
+local function get_driver(host, store)
 	local storage = config.get(host, "storage");
 	local driver_name;
 	local option_type = type(storage);
@@ -70,7 +69,7 @@ function get_driver(host, store)
 	if not driver_name then
 		driver_name = config.get(host, "default_storage") or "internal";
 	end
-	
+
 	local driver = load_driver(host, driver_name);
 	if not driver then
 		log("warn", "Falling back to null driver for %s storage on %s", store, host);
@@ -80,7 +79,7 @@ function get_driver(host, store)
 	return driver, driver_name;
 end
 
-function open(host, store, typ)
+local function open(host, store, typ)
 	local driver, driver_name = get_driver(host, store);
 	local ret, err = driver:open(store, typ);
 	if not ret then
@@ -94,14 +93,19 @@ function open(host, store, typ)
 	return ret, err;
 end
 
-function purge(user, host)
+local function purge(user, host)
 	local storage = config.get(host, "storage");
 	if type(storage) == "table" then
 		-- multiple storage backends in use that we need to purge
 		local purged = {};
-		for store, driver in pairs(storage) do
-			if not purged[driver] then
-				purged[driver] = get_driver(host, store):purge(user);
+		for store, driver_name in pairs(storage) do
+			if not purged[driver_name] then
+				local driver = get_driver(host, store);
+				if driver.purge then
+					purged[driver_name] = driver:purge(user);
+				else
+					log("warn", "Storage driver %s does not support removing all user data, you may need to delete it manually", driver_name);
+				end
 			end
 		end
 	end
@@ -132,4 +136,12 @@ function datamanager.purge(username, host)
 	return purge(username, host);
 end
 
-return _M;
+return {
+	initialize_host = initialize_host;
+	load_driver = load_driver;
+	get_driver = get_driver;
+	open = open;
+	purge = purge;
+
+	olddm = olddm;
+};
