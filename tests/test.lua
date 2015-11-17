@@ -1,26 +1,26 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
 
-
+local tests_passed = true;
 
 function run_all_tests()
 	package.loaded["net.connlisteners"] = { get = function () return {} end };
 	dotest "util.jid"
 	dotest "util.multitable"
-	dotest "util.rfc3484"
-	dotest "net.http"
-	dotest "core.modulemanager"
+	dotest "util.rfc6724"
+	dotest "util.http"
 	dotest "core.stanza_router"
 	dotest "core.s2smanager"
 	dotest "core.configmanager"
+	dotest "util.ip"
 	dotest "util.stanza"
 	dotest "util.sasl.scram"
-	
+
 	dosingletest("test_sasl.lua", "latin1toutf8");
 	dosingletest("test_utf8.lua", "valid");
 end
@@ -88,17 +88,18 @@ function dosingletest(testname, fname)
 		print("WARNING: ", "Failed to initialise tests for "..testname, err);
 		return;
 	end
-	
+
 	if type(tests[fname]) ~= "function" then
 		error(testname.." has no test '"..fname.."'", 0);
 	end
-	
-	
+
+
 	local line_hook, line_info = new_line_coverage_monitor(testname);
 	debug.sethook(line_hook, "l")
 	local success, ret = pcall(tests[fname]);
 	debug.sethook();
 	if not success then
+		tests_passed = false;
 		print("TEST FAILED! Unit: ["..testname.."] Function: ["..fname.."]");
 		print("   Location: "..ret:gsub(":%s*\n", "\n"));
 		line_info(fname, false, report_file);
@@ -135,17 +136,23 @@ function dotest(unitname)
 		print("WARNING: ", "Failed to load module: "..unitname, err);
 		return;
 	end
-	
+
 	local oldmodule, old_M = _fakeG.module, _fakeG._M;
-	_fakeG.module = function () _M = _G end
+	_fakeG.module = function () _M = unit end
 	setfenv(chunk, unit);
-	local success, err = pcall(chunk);
+	local success, ret = pcall(chunk);
 	_fakeG.module, _fakeG._M = oldmodule, old_M;
 	if not success then
 		print("WARNING: ", "Failed to initialise module: "..unitname, err);
 		return;
 	end
-	
+
+	if type(ret) == "table" then
+		for k,v in pairs(ret) do
+			unit[k] = v;
+		end
+	end
+
 	for name, f in pairs(unit) do
 		local test = rawget(tests, name);
 		if type(f) ~= "function" then
@@ -165,6 +172,7 @@ function dotest(unitname)
 			local success, ret = pcall(test, f, unit);
 			debug.sethook();
 			if not success then
+				tests_passed = false;
 				print("TEST FAILED! Unit: ["..unitname.."] Function: ["..name.."]");
 				print("   Location: "..ret:gsub(":%s*\n", "\n"));
 				line_info(name, false, report_file);
@@ -184,6 +192,7 @@ function runtest(f, msg)
 	if success and verbosity >= 2 then
 		print("SUBTEST PASSED: "..(msg or "(no description)"));
 	elseif (not success) and verbosity >= 0 then
+		tests_passed = false;
 		print("SUBTEST FAILED: "..(msg or "(no description)"));
 		error(ret, 0);
 	end
@@ -192,11 +201,11 @@ end
 function new_line_coverage_monitor(file)
 	local lines_hit, funcs_hit = {}, {};
 	local total_lines, covered_lines = 0, 0;
-	
+
 	for line in io.lines(file) do
 		total_lines = total_lines + 1;
 	end
-	
+
 	return function (event, line) -- Line hook
 			if not lines_hit[line] then
 				local info = debug.getinfo(2, "fSL")
@@ -231,3 +240,5 @@ function new_line_coverage_monitor(file)
 end
 
 run_all_tests()
+
+os.exit(tests_passed and 0 or 1);

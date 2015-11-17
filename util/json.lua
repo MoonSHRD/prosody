@@ -13,7 +13,7 @@ local tostring, tonumber = tostring, tonumber;
 local pairs, ipairs = pairs, ipairs;
 local next = next;
 local error = error;
-local newproxy, getmetatable, setmetatable = newproxy, getmetatable, setmetatable;
+local getmetatable, setmetatable = getmetatable, setmetatable;
 local print = print;
 
 local has_array, array = pcall(require, "util.array");
@@ -22,10 +22,7 @@ local array_mt = has_array and getmetatable(array()) or {};
 --module("json")
 local json = {};
 
-local null = newproxy and newproxy(true) or {};
-if getmetatable and getmetatable(null) then
-	getmetatable(null).__tostring = function() return "null"; end;
-end
+local null = setmetatable({}, { __tostring = function() return "null"; end; });
 json.null = null;
 
 local escapes = {
@@ -348,9 +345,9 @@ local first_escape = {
 function json.decode(json)
 	json = json:gsub("\\.", first_escape) -- get rid of all escapes except \uXXXX, making string parsing much simpler
 		--:gsub("[\r\n]", "\t"); -- \r\n\t are equivalent, we care about none of them, and none of them can be in strings
-	
+
 	-- TODO do encoding verification
-	
+
 	local val, index = _readvalue(json, 1);
 	if val == nil then return val, index; end
 	if json:find("[^ \t\r\n]", index) then return nil, "garbage at eof"; end

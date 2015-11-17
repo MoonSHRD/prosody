@@ -9,12 +9,12 @@ local set = require "util.set";
 
 local table = table;
 local setmetatable, rawset, rawget = setmetatable, rawset, rawget;
-local type, tonumber, tostring, ipairs, pairs = type, tonumber, tostring, ipairs, pairs;
+local type, tonumber, tostring, ipairs = type, tonumber, tostring, ipairs;
 
 local prosody = prosody;
 local fire_event = prosody.events.fire_event;
 
-module "portmanager";
+local _ENV = nil;
 
 --- Config
 
@@ -41,7 +41,7 @@ local active_services = multitable.new();
 
 --- Private helpers
 
-local function error_to_friendly_message(service_name, port, err)
+local function error_to_friendly_message(service_name, port, err) --luacheck: ignore 212/service_name
 	local friendly_message = err;
 	if err:match(" in use") then
 		-- FIXME: Use service_name here
@@ -63,33 +63,14 @@ local function error_to_friendly_message(service_name, port, err)
 	return friendly_message;
 end
 
-prosody.events.add_handler("item-added/net-provider", function (event)
-	local item = event.item;
-	register_service(item.name, item);
-end);
-prosody.events.add_handler("item-removed/net-provider", function (event)
-	local item = event.item;
-	unregister_service(item.name, item);
-end);
-
-local function duplicate_ssl_config(ssl_config)
-	local ssl_config = type(ssl_config) == "table" and ssl_config or {};
-
-	local _config = {};
-	for k, v in pairs(ssl_config) do
-		_config[k] = v;
-	end
-	return _config;
-end
-
 --- Public API
 
-function activate(service_name)
+local function activate(service_name)
 	local service_info = services[service_name][1];
 	if not service_info then
 		return nil, "Unknown service: "..service_name;
 	end
-	
+
 	local listener = service_info.listener;
 
 	local config_prefix = (service_info.config_prefix or service_name).."_";
@@ -105,7 +86,7 @@ function activate(service_name)
 		or listener.default_interface -- COMPAT w/pre0.9
 		or default_interfaces
 	bind_interfaces = set.new(type(bind_interfaces)~="table" and {bind_interfaces} or bind_interfaces);
-	
+
 	local bind_ports = config.get("*", config_prefix.."ports")
 		or service_info.default_ports
 		or {service_info.default_port
@@ -115,7 +96,7 @@ function activate(service_name)
 
 	local mode, ssl = listener.default_mode or default_mode;
 	local hooked_ports = {};
-	
+
 	for interface in bind_interfaces do
 		for port in bind_ports do
 			local port_number = tonumber(port);
@@ -127,24 +108,15 @@ function activate(service_name)
 				local err;
 				-- Create SSL context for this service/port
 				if service_info.encryption == "ssl" then
-					local ssl_config = duplicate_ssl_config((config.get("*", config_prefix.."ssl") and config.get("*", config_prefix.."ssl")[interface])
-								or (config.get("*", config_prefix.."ssl") and config.get("*", config_prefix.."ssl")[port])
-								or config.get("*", config_prefix.."ssl")
-								or (config.get("*", "ssl") and config.get("*", "ssl")[interface])
-								or (config.get("*", "ssl") and config.get("*", "ssl")[port])
-								or config.get("*", "ssl"));
-					-- add default entries for, or override ssl configuration
-					if ssl_config and service_info.ssl_config then
-						for key, value in pairs(service_info.ssl_config) do
-							if not service_info.ssl_config_override and not ssl_config[key] then
-								ssl_config[key] = value;
-							elseif service_info.ssl_config_override then
-								ssl_config[key] = value;
-							end
-						end
-					end
-
-					ssl, err = certmanager.create_context(service_info.name.." port "..port, "server", ssl_config);
+					local global_ssl_config = config.get("*", "ssl") or {};
+					local prefix_ssl_config = config.get("*", config_prefix.."ssl") or global_ssl_config;
+					ssl, err = certmanager.create_context(service_info.name.." port "..port, "server",
+						service_info.ssl_config or {},
+						prefix_ssl_config[interface],
+						prefix_ssl_config[port],
+						prefix_ssl_config,
+						global_ssl_config[interface],
+						global_ssl_config[port]);
 					if not ssl then
 						log("error", "Error binding encrypted port for %s: %s", service_info.name, error_to_friendly_message(service_name, port_number, err) or "unknown error");
 					end
@@ -170,8 +142,10 @@ function activate(service_name)
 	return true;
 end
 
-function deactivate(service_name, service_info)
-	for name, interface, port, n, active_service
+local close; -- forward declaration
+
+local function deactivate(service_name, service_info)
+	for name, interface, port, n, active_service --luacheck: ignore 213/name 213/n
 		in active_services:iter(service_name or service_info and service_info.name, nil, nil, nil) do
 		if service_info == nil or active_service.service == service_info then
 			close(interface, port);
@@ -180,7 +154,7 @@ function deactivate(service_name, service_info)
 	log("info", "Deactivated service '%s'", service_name or service_info.name);
 end
 
-function register_service(service_name, service_info)
+local function register_service(service_name, service_info)
 	table.insert(services[service_name], service_info);
 
 	if not active_services:get(service_name) then
@@ -190,12 +164,12 @@ function register_service(service_name, service_info)
 			log("error", "Failed to activate service '%s': %s", service_name, err or "unknown error");
 		end
 	end
-	
+
 	fire_event("service-added", { name = service_name, service = service_info });
 	return true;
 end
 
-function unregister_service(service_name, service_info)
+local function unregister_service(service_name, service_info)
 	log("debug", "Unregistering service: %s", service_name);
 	local service_info_list = services[service_name];
 	for i, service in ipairs(service_info_list) do
@@ -210,12 +184,14 @@ function unregister_service(service_name, service_info)
 	fire_event("service-removed", { name = service_name, service = service_info });
 end
 
+local get_service_at -- forward declaration
+
 function close(interface, port)
-	local service, server = get_service_at(interface, port);
+	local service, service_server = get_service_at(interface, port);
 	if not service then
 		return false, "port-not-open";
 	end
-	server:close();
+	service_server:close();
 	active_services:remove(service.name, interface, port);
 	log("debug", "Removed listening service %s from [%s]:%d", service.name, interface, port);
 	return true;
@@ -226,16 +202,37 @@ function get_service_at(interface, port)
 	return data.service, data.server;
 end
 
-function get_service(service_name)
+local function get_service(service_name)
 	return (services[service_name] or {})[1];
 end
 
-function get_active_services(...)
+local function get_active_services()
 	return active_services;
 end
 
-function get_registered_services()
+local function get_registered_services()
 	return services;
 end
 
-return _M;
+-- Event handlers
+
+prosody.events.add_handler("item-added/net-provider", function (event)
+	local item = event.item;
+	register_service(item.name, item);
+end);
+prosody.events.add_handler("item-removed/net-provider", function (event)
+	local item = event.item;
+	unregister_service(item.name, item);
+end);
+
+return {
+	activate = activate;
+	deactivate = deactivate;
+	register_service = register_service;
+	unregister_service = unregister_service;
+	close = close;
+	get_service_at = get_service_at;
+	get_service = get_service;
+	get_active_services = get_active_services;
+	get_registered_services = get_registered_services;
+};

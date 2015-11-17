@@ -10,7 +10,6 @@ local modulemanager = require "core.modulemanager";
 local log = require "util.logger".init("usermanager");
 local type = type;
 local ipairs = ipairs;
-local pairs = pairs;
 local jid_bare = require "util.jid".bare;
 local jid_prep = require "util.jid".prep;
 local config = require "core.configmanager";
@@ -24,22 +23,22 @@ local setmetatable = setmetatable;
 
 local default_provider = "internal_plain";
 
-module "usermanager"
+local _ENV = nil;
 
-function new_null_provider()
+local function new_null_provider()
 	local function dummy() return nil, "method not implemented"; end;
 	local function dummy_get_sasl_handler() return sasl_new(nil, {}); end
 	return setmetatable({name = "null", get_sasl_handler = dummy_get_sasl_handler}, {
-		__index = function(self, method) return dummy; end
+		__index = function(self, method) return dummy; end --luacheck: ignore 212
 	});
 end
 
 local provider_mt = { __index = new_null_provider() };
 
-function initialize_host(host)
+local function initialize_host(host)
 	local host_session = hosts[host];
 	if host_session.type ~= "local" then return; end
-	
+
 	host_session.events.add_handler("item-added/auth-provider", function (event)
 		local provider = event.item;
 		local auth_provider = config.get(host, "authentication") or default_provider;
@@ -51,7 +50,7 @@ function initialize_host(host)
 			host_session.users = setmetatable(provider, provider_mt);
 		end
 		if host_session.users ~= nil and host_session.users.name ~= nil then
-			log("debug", "host '%s' now set to use user provider '%s'", host, host_session.users.name);
+			log("debug", "Host '%s' now set to use user provider '%s'", host, host_session.users.name);
 		end
 	end);
 	host_session.events.add_handler("item-removed/auth-provider", function (event)
@@ -69,56 +68,56 @@ function initialize_host(host)
 end;
 prosody.events.add_handler("host-activated", initialize_host, 100);
 
-function test_password(username, host, password)
+local function test_password(username, host, password)
 	return hosts[host].users.test_password(username, password);
 end
 
-function get_password(username, host)
+local function get_password(username, host)
 	return hosts[host].users.get_password(username);
 end
 
-function set_password(username, password, host)
+local function set_password(username, password, host)
 	return hosts[host].users.set_password(username, password);
 end
 
-function user_exists(username, host)
+local function user_exists(username, host)
 	return hosts[host].users.user_exists(username);
 end
 
-function create_user(username, password, host)
+local function create_user(username, password, host)
 	return hosts[host].users.create_user(username, password);
 end
 
-function delete_user(username, host)
+local function delete_user(username, host)
 	local ok, err = hosts[host].users.delete_user(username);
 	if not ok then return nil, err; end
 	prosody.events.fire_event("user-deleted", { username = username, host = host });
 	return storagemanager.purge(username, host);
 end
 
-function users(host)
+local function users(host)
 	return hosts[host].users.users();
 end
 
-function get_sasl_handler(host, session)
+local function get_sasl_handler(host, session)
 	return hosts[host].users.get_sasl_handler(session);
 end
 
-function get_provider(host)
+local function get_provider(host)
 	return hosts[host].users;
 end
 
-function is_admin(jid, host)
+local function is_admin(jid, host)
 	if host and not hosts[host] then return false; end
 	if type(jid) ~= "string" then return false; end
 
 	local is_admin;
 	jid = jid_bare(jid);
 	host = host or "*";
-	
+
 	local host_admins = config.get(host, "admins");
 	local global_admins = config.get("*", "admins");
-	
+
 	if host_admins and host_admins ~= global_admins then
 		if type(host_admins) == "table" then
 			for _,admin in ipairs(host_admins) do
@@ -131,7 +130,7 @@ function is_admin(jid, host)
 			log("error", "Option 'admins' for host '%s' is not a list", host);
 		end
 	end
-	
+
 	if not is_admin and global_admins then
 		if type(global_admins) == "table" then
 			for _,admin in ipairs(global_admins) do
@@ -144,7 +143,7 @@ function is_admin(jid, host)
 			log("error", "Global option 'admins' is not a list");
 		end
 	end
-	
+
 	-- Still not an admin, check with auth provider
 	if not is_admin and host ~= "*" and hosts[host].users and hosts[host].users.is_admin then
 		is_admin = hosts[host].users.is_admin(jid);
@@ -152,4 +151,17 @@ function is_admin(jid, host)
 	return is_admin or false;
 end
 
-return _M;
+return {
+	new_null_provider = new_null_provider;
+	initialize_host = initialize_host;
+	test_password = test_password;
+	get_password = get_password;
+	set_password = set_password;
+	user_exists = user_exists;
+	create_user = create_user;
+	delete_user = delete_user;
+	users = users;
+	get_sasl_handler = get_sasl_handler;
+	get_provider = get_provider;
+	is_admin = is_admin;
+};
