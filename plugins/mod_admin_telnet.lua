@@ -336,6 +336,43 @@ function def_env.server:memory()
 	return true, "OK";
 end
 
+def_env.timer = {};
+
+function def_env.timer:info()
+	local socket = require "socket";
+	local print = self.session.print;
+	local add_task = require"util.timer".add_task;
+	local h, params = add_task.h, add_task.params;
+	if h then
+		print("-- util.timer");
+		for i, id in ipairs(h.ids) do
+			if not params[id] then
+				print(os.date("%F %T", h.priorities[i]), h.items[id]);
+			elseif not params[id].callback then
+				print(os.date("%F %T", h.priorities[i]), h.items[id], unpack(params[id]));
+			else
+				print(os.date("%F %T", h.priorities[i]), params[id].callback, unpack(params[id]));
+			end
+		end
+	end
+	if server.event_base then
+		local count = 0;
+		for k, v in pairs(debug.getregistry()) do
+			if type(v) == "function" and v.callback and v.callback == add_task._on_timer then
+				count = count + 1;
+			end
+		end
+		print(count .. " libevent callbacks");
+	end
+	if h then
+		local next_time = h:peek();
+		if next_time then
+			return true, os.date("Next event at %F %T (in %%.6fs)", next_time):format(next_time - socket.gettime());
+		end
+	end
+	return true;
+end
+
 def_env.module = {};
 
 local function get_hosts_set(hosts, module)
@@ -960,7 +997,7 @@ function def_env.muc:room(room_jid)
 	if not room_name then
 		return room_name, host;
 	end
-	local room_obj = hosts[host].modules.muc.rooms[room_jid];
+	local room_obj = hosts[host].modules.muc.get_room_from_jid(room_jid);
 	if not room_obj then
 		return nil, "No such room: "..room_jid;
 	end
@@ -974,8 +1011,8 @@ function def_env.muc:list(host)
 	end
 	local print = self.session.print;
 	local c = 0;
-	for name in keys(host_session.modules.muc.rooms) do
-		print(name);
+	for room in host_session.modules.muc.each_room() do
+		print(room.jid);
 		c = c + 1;
 	end
 	return true, c.." rooms";
