@@ -11,6 +11,7 @@ local setmetatable = setmetatable;
 local xpcall = xpcall;
 local traceback = debug.traceback;
 local tostring = tostring;
+local cache = require "util.cache";
 local codes = require "net.http.codes";
 
 local _M = {};
@@ -27,7 +28,10 @@ local function is_wildcard_match(wildcard_event, event)
 	return wildcard_event:sub(1, -2) == event:sub(1, #wildcard_event-1);
 end
 
-local recent_wildcard_events, max_cached_wildcard_events = {}, 10000;
+local _handlers = events._handlers;
+local recent_wildcard_events = cache.new(10000, function (key, value)
+	rawset(_handlers, key, nil);
+end);
 
 local event_map = events._event_map;
 setmetatable(events._handlers, {
@@ -62,10 +66,7 @@ setmetatable(events._handlers, {
 		end
 		rawset(handlers, curr_event, handlers_array);
 		if not event_map[curr_event] then -- Only wildcard handlers match, if any
-			table.insert(recent_wildcard_events, curr_event);
-			if #recent_wildcard_events > max_cached_wildcard_events then
-				rawset(handlers, table.remove(recent_wildcard_events, 1), nil);
-			end
+			recent_wildcard_events:set(curr_event, true);
 		end
 		return handlers_array;
 	end;
@@ -189,6 +190,7 @@ function handle_request(conn, request, finish_cb)
 		persistent = persistent;
 		conn = conn;
 		send = _M.send_response;
+		done = _M.finish_response;
 		finish_cb = finish_cb;
 	};
 	conn._http_open_response = response;
@@ -208,7 +210,7 @@ function handle_request(conn, request, finish_cb)
 			err_code, err = 400, "Missing or invalid 'Host' header";
 		end
 	end
-	
+
 	if err then
 		response.status_code = err_code;
 		response:send(events.fire_event("http-error", { code = err_code, message = err }));
@@ -250,24 +252,30 @@ function handle_request(conn, request, finish_cb)
 	response.status_code = 404;
 	response:send(events.fire_event("http-error", { code = 404 }));
 end
-function _M.send_response(response, body)
-	if response.finished then return; end
-	response.finished = true;
-	response.conn._http_open_response = nil;
-	
+local function prepare_header(response)
 	local status_line = "HTTP/"..response.request.httpversion.." "..(response.status or codes[response.status_code]);
 	local headers = response.headers;
-	body = body or response.body or "";
-	headers.content_length = #body;
-
 	local output = { status_line };
 	for k,v in pairs(headers) do
 		t_insert(output, headerfix[k]..v);
 	end
 	t_insert(output, "\r\n\r\n");
+	return output;
+end
+_M.prepare_header = prepare_header;
+function _M.send_response(response, body)
+	if response.finished then return; end
+	body = body or response.body or "";
+	response.headers.content_length = #body;
+	local output = prepare_header(response);
 	t_insert(output, body);
-
 	response.conn:write(t_concat(output));
+	response:done();
+end
+function _M.finish_response(response)
+	if response.finished then return; end
+	response.finished = true;
+	response.conn._http_open_response = nil;
 	if response.on_destroy then
 		response:on_destroy();
 		response.on_destroy = nil;
