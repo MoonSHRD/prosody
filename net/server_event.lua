@@ -97,7 +97,7 @@ function interface_mt:_close()
 	return self:_destroy();
 end
 
-function interface_mt:_start_connection(plainssl) -- should be called from addclient
+function interface_mt:_start_connection(plainssl) -- called from wrapclient
 	local callback = function( event )
 		if EV_TIMEOUT == event then  -- timeout during connection
 			self.fatalerror = "connection timeout"
@@ -238,8 +238,8 @@ function interface_mt:_destroy()  -- close this interface + events and call last
 end
 
 function interface_mt:_lock(nointerface, noreading, nowriting)  -- lock or unlock this interface or events
-	self.nointerface, self.noreading, self.nowriting = nointerface, noreading, nowriting
-	return nointerface, noreading, nowriting
+		self.nointerface, self.noreading, self.nowriting = nointerface, noreading, nowriting
+		return nointerface, noreading, nowriting
 end
 
 --TODO: Deprecate
@@ -702,16 +702,14 @@ local function addclient( addr, serverport, listener, pattern, sslctx, typ )
 		debug "need luasec, but not available"
 		return nil, "luasec not found"
 	end
-	if not typ then
+	if getaddrinfo and not typ then
 		local addrinfo, err = getaddrinfo(addr)
 		if not addrinfo then return nil, err end
 		if addrinfo[1] and addrinfo[1].family == "inet6" then
 			typ = "tcp6"
-		else
-			typ = "tcp"
 		end
 	end
-	local create = socket[typ]
+	local create = socket[typ or "tcp"]
 	if type( create ) ~= "function"  then
 		return nil, "invalid socket type"
 	end
@@ -722,10 +720,11 @@ local function addclient( addr, serverport, listener, pattern, sslctx, typ )
 	end
 	client:settimeout( 0 )  -- set nonblocking
 	local res, err = client:connect( addr, serverport )  -- connect
-	if res or ( err == "timeout" ) then
-		local ip, port = client:getsockname( )
-		local interface = wrapclient( client, ip, serverport, listener, pattern, sslctx )
-		interface:_start_connection( sslctx )
+	if res or ( err == "timeout" or err == "Operation already in progress" ) then
+		if client.getsockname then
+			addr = client:getsockname( )
+		end
+		local interface = wrapclient( client, addr, serverport, listener, pattern, sslctx )
 		debug( "new connection id:", interface.id )
 		return interface, err
 	else
@@ -741,7 +740,7 @@ end
 
 local function newevent( ... )
 	return addevent( base, ... )
-end
+	end
 
 local function closeallservers ( arg )
 	for item in pairs( interfacelist ) do
@@ -753,9 +752,9 @@ end
 
 local function setquitting(yes)
 	if yes then
-		-- Quit now
-		closeallservers();
-		base:loopexit();
+		 -- Quit now
+		 closeallservers();
+		 base:loopexit();
 	end
 end
 
@@ -798,6 +797,20 @@ local function link(sender, receiver, buffersize)
 	sender:set_mode("*a");
 end
 
+local function add_task(delay, callback)
+	local event_handle;
+	event_handle = base:addevent(nil, 0, function ()
+		local ret = callback(socket_gettime());
+		if ret then
+			return 0, ret;
+		elseif event_handle then
+			return -1;
+		end
+	end
+	, delay);
+	return event_handle;
+end
+
 return {
 	cfg = cfg,
 	base = base,
@@ -813,6 +826,7 @@ return {
 	closeall = closeallservers,
 	get_backend = get_backend,
 	hook_signal = hook_signal,
+	add_task = add_task,
 
 	__NAME = SCRIPT_NAME,
 	__DATE = LAST_MODIFIED,
