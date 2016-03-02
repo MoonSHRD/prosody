@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -11,8 +11,8 @@
 local st = require "util.stanza";
 local t_concat = table.concat;
 
-local secure_auth_only = module:get_option("c2s_require_encryption")
-	or module:get_option("require_encryption")
+local secure_auth_only = module:get_option("c2s_require_encryption",
+	module:get_option("require_encryption"))
 	or not(module:get_option("allow_unencrypted_plain_auth"));
 
 local sessionmanager = require "core.sessionmanager";
@@ -43,10 +43,11 @@ module:hook("stanza/iq/jabber:iq:auth:query", function(event)
 		session.send(st.error_reply(stanza, "modify", "not-acceptable", "Encryption (SSL or TLS) is required to connect to this server"));
 		return true;
 	end
-	
-	local username = stanza.tags[1]:child_with_name("username");
-	local password = stanza.tags[1]:child_with_name("password");
-	local resource = stanza.tags[1]:child_with_name("resource");
+
+	local query = stanza.tags[1];
+	local username = query:get_child("username");
+	local password = query:get_child("password");
+	local resource = query:get_child("resource");
 	if not (username and password and resource) then
 		local reply = st.reply(stanza);
 		session.send(reply:query("jabber:iq:auth")

@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -13,31 +13,33 @@ local pluginloader = require "util.pluginloader";
 local set = require "util.set";
 
 local new_multitable = require "util.multitable".new;
+local api = require "core.moduleapi"; -- Module API container
 
 local hosts = hosts;
 local prosody = prosody;
 
-local pcall, xpcall = pcall, xpcall;
+local xpcall = xpcall;
 local setmetatable, rawget = setmetatable, rawget;
 local ipairs, pairs, type, tostring, t_insert = ipairs, pairs, type, tostring, table.insert;
 
 local debug_traceback = debug.traceback;
-local unpack, select = unpack, select;
-pcall = function(f, ...)
+local select = select;
+local unpack = table.unpack or unpack; --luacheck: ignore 113
+local pcall = function(f, ...)
 	local n = select("#", ...);
 	local params = {...};
 	return xpcall(function() return f(unpack(params, 1, n)) end, function(e) return tostring(e).."\n"..debug_traceback(); end);
 end
 
-local autoload_modules = {"presence", "message", "iq", "offline", "c2s", "s2s"};
+local autoload_modules = {prosody.platform, "presence", "message", "iq", "offline", "c2s", "s2s", "s2s_auth_certs"};
 local component_inheritable_modules = {"tls", "saslauth", "dialback", "iq", "s2s"};
 
 -- We need this to let modules access the real global namespace
 local _G = _G;
 
-module "modulemanager"
+local _ENV = nil;
 
-local api = _G.require "core.moduleapi"; -- Module API container
+local load_modules_for_host, load, unload, reload, get_module, get_items, get_modules, is_loaded, module_has_method, call_module_method;
 
 -- [host] = { [module] = module_env }
 local modulemap = { ["*"] = {} };
@@ -45,28 +47,28 @@ local modulemap = { ["*"] = {} };
 -- Load modules when a host is activated
 function load_modules_for_host(host)
 	local component = config.get(host, "component_module");
-	
+
 	local global_modules_enabled = config.get("*", "modules_enabled");
 	local global_modules_disabled = config.get("*", "modules_disabled");
 	local host_modules_enabled = config.get(host, "modules_enabled");
 	local host_modules_disabled = config.get(host, "modules_disabled");
-	
+
 	if host_modules_enabled == global_modules_enabled then host_modules_enabled = nil; end
 	if host_modules_disabled == global_modules_disabled then host_modules_disabled = nil; end
-	
+
 	local global_modules = set.new(autoload_modules) + set.new(global_modules_enabled) - set.new(global_modules_disabled);
 	if component then
 		global_modules = set.intersection(set.new(component_inheritable_modules), global_modules);
 	end
 	local modules = (global_modules + set.new(host_modules_enabled)) - set.new(host_modules_disabled);
-	
+
 	-- COMPAT w/ pre 0.8
 	if modules:contains("console") then
 		log("error", "The mod_console plugin has been renamed to mod_admin_telnet. Please update your config.");
 		modules:remove("console");
 		modules:add("admin_telnet");
 	end
-	
+
 	if component then
 		load(host, component);
 	end
@@ -84,18 +86,18 @@ end);
 local function do_unload_module(host, name)
 	local mod = get_module(host, name);
 	if not mod then return nil, "module-not-loaded"; end
-	
+
 	if module_has_method(mod, "unload") then
 		local ok, err = call_module_method(mod, "unload");
 		if (not ok) and err then
 			log("warn", "Non-fatal error unloading module '%s' on '%s': %s", name, host, err);
 		end
 	end
-	
+
 	for object, event, handler in mod.module.event_handlers:iter(nil, nil, nil) do
 		object.remove_handler(event, handler);
 	end
-	
+
 	if mod.module.items then -- remove items
 		local events = (host == "*" and prosody.events) or hosts[host].events;
 		for key,t in pairs(mod.module.items) do
@@ -117,11 +119,11 @@ local function do_load_module(host, module_name, state)
 	elseif not hosts[host] and host ~= "*"then
 		return nil, "unknown-host";
 	end
-	
+
 	if not modulemap[host] then
 		modulemap[host] = hosts[host].modules;
 	end
-	
+
 	if modulemap[host][module_name] then
 		log("debug", "%s is already loaded for %s, so not loading again", module_name, host);
 		return nil, "module-already-loaded";
@@ -131,7 +133,7 @@ local function do_load_module(host, module_name, state)
 			local _log = logger.init(host..":"..module_name);
 			local host_module_api = setmetatable({
 				host = host, event_handlers = new_multitable(), items = {};
-				_log = _log, log = function (self, ...) return _log(...); end;
+				_log = _log, log = function (self, ...) return _log(...); end; --luacheck: ignore 212/self
 			},{
 				__index = modulemap["*"][module_name].module;
 			});
@@ -147,18 +149,19 @@ local function do_load_module(host, module_name, state)
 		end
 		return nil, "global-module-already-loaded";
 	end
-	
+
 
 
 	local _log = logger.init(host..":"..module_name);
 	local api_instance = setmetatable({ name = module_name, host = host,
-		_log = _log, log = function (self, ...) return _log(...); end, event_handlers = new_multitable(),
-		reloading = not not state, saved_state = state~=true and state or nil }
+		_log = _log, log = function (self, ...) return _log(...); end, --luacheck: ignore 212/self
+		event_handlers = new_multitable(), reloading = not not state,
+		saved_state = state~=true and state or nil }
 		, { __index = api });
 
 	local pluginenv = setmetatable({ module = api_instance }, { __index = _G });
 	api_instance.environment = pluginenv;
-	
+
 	local mod, err = pluginloader.load_code(module_name, nil, pluginenv);
 	if not mod then
 		log("error", "Unable to load module '%s': %s", module_name or "nil", err or "nil");
@@ -316,4 +319,15 @@ function call_module_method(module, method, ...)
 	end
 end
 
-return _M;
+return {
+	load_modules_for_host = load_modules_for_host;
+	load = load;
+	unload = unload;
+	reload = reload;
+	get_module = get_module;
+	get_items = get_items;
+	get_modules = get_modules;
+	is_loaded = is_loaded;
+	module_has_method = module_has_method;
+	call_module_method = call_module_method;
+};
