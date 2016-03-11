@@ -136,7 +136,7 @@ local map_shim_mt = {
 	};
 }
 
-local open;
+local open; -- forward declaration
 
 local function create_map_shim(host, store)
 	local keyval_store, err = open(host, store, "keyval");
