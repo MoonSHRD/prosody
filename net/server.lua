@@ -6,49 +6,28 @@
 -- COPYING file in the source package for more information.
 --
 
-local use_luaevent = prosody and require "core.configmanager".get("*", "use_libevent");
+local server_type = prosody and require "core.configmanager".get("*", "network_backend") or "select";
+if prosody and require "core.configmanager".get("*", "use_libevent") then
+	server_type = "event";
+end
 
-if use_luaevent then
-	use_luaevent = pcall(require, "luaevent.core");
-	if not use_luaevent then
+if server_type == "event" then
+	if not pcall(require, "luaevent.core") then
 		log("error", "libevent not found, falling back to select()");
+		server_type = "select"
 	end
 end
 
 local server;
-
-if use_luaevent then
+local set_config;
+if server_type == "event" then
 	server = require "net.server_event";
 
-	-- Overwrite signal.signal() because we need to ask libevent to
-	-- handle them instead
-	local ok, signal = pcall(require, "util.signal");
-	if ok and signal then
-		local _signal_signal = signal.signal;
-		function signal.signal(signal_id, handler)
-			if type(signal_id) == "string" then
-				signal_id = signal[signal_id:upper()];
-			end
-			if type(signal_id) ~= "number" then
-				return false, "invalid-signal";
-			end
-			return server.hook_signal(signal_id, handler);
-		end
-	end
-else
-	use_luaevent = false;
-	server = require "net.server_select";
-end
-
-if prosody then
-	local config_get = require "core.configmanager".get;
 	local defaults = {};
-	for k,v in pairs(server.cfg or server.getsettings()) do
+	for k,v in pairs(server.cfg) do
 		defaults[k] = v;
 	end
-	local function load_config()
-		local settings = config_get("*", "network_settings") or {};
-		if use_luaevent then
+	function set_config(settings)
 			local event_settings = {
 				ACCEPT_DELAY = settings.accept_retry_interval;
 				ACCEPT_QUEUE = settings.tcp_backlog;
@@ -67,13 +46,54 @@ if prosody then
 			for k,default in pairs(defaults) do
 				server.cfg[k] = event_settings[k] or default;
 			end
-		else
+	end
+elseif server_type == "select" then
+	server = require "net.server_select";
+
+	local defaults = {};
+	for k,v in pairs(server.getsettings()) do
+		defaults[k] = v;
+	end
+	function set_config(settings)
 			local select_settings = {};
 			for k,default in pairs(defaults) do
 				select_settings[k] = settings[k] or default;
 			end
 			server.changesettings(select_settings);
 		end
+else
+	error("Unsupported server type")
+end
+
+-- If server.hook_signal exists, replace signal.signal()
+local has_signal, signal = pcall(require, "util.signal");
+if has_signal then
+	if server.hook_signal then
+		function signal.signal(signal_id, handler)
+			if type(signal_id) == "string" then
+				signal_id = signal[signal_id:upper()];
+			end
+			if type(signal_id) ~= "number" then
+				return false, "invalid-signal";
+			end
+			return server.hook_signal(signal_id, handler);
+		end
+	else
+		server.hook_signal = signal.signal;
+	end
+else
+	if not server.hook_signal then
+		server.hook_signal = function()
+			return false, "signal hooking not supported"
+		end
+	end
+end
+
+if prosody then
+	local config_get = require "core.configmanager".get;
+	local function load_config()
+		local settings = config_get("*", "network_settings") or {};
+		return set_config(settings);
 	end
 	load_config();
 	prosody.events.add_handler("config-reloaded", load_config);
