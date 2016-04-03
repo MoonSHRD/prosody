@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -36,15 +36,15 @@ module:hook("iq/self/jabber:iq:roster:query", function(event)
 
 	if stanza.attr.type == "get" then
 		local roster = st.reply(stanza);
-		
+
 		local client_ver = tonumber(stanza.tags[1].attr.ver);
 		local server_ver = tonumber(session.roster[false].version or 1);
-		
+
 		if not (client_ver and server_ver) or client_ver ~= server_ver then
 			roster:query("jabber:iq:roster");
 			-- Client does not support versioning, or has stale roster
 			for jid, item in pairs(session.roster) do
-				if jid ~= "pending" and jid then
+				if jid then
 					roster:tag("item", {
 						jid = jid,
 						subscription = item.subscription,
@@ -64,9 +64,7 @@ module:hook("iq/self/jabber:iq:roster:query", function(event)
 	else -- stanza.attr.type == "set"
 		local query = stanza.tags[1];
 		if #query.tags == 1 and query.tags[1].name == "item"
-				and query.tags[1].attr.xmlns == "jabber:iq:roster" and query.tags[1].attr.jid
-				-- Protection against overwriting roster.pending, until we move it
-				and query.tags[1].attr.jid ~= "pending" then
+				and query.tags[1].attr.xmlns == "jabber:iq:roster" and query.tags[1].attr.jid then
 			local item = query.tags[1];
 			local from_node, from_host = jid_split(stanza.attr.from);
 			local jid = jid_prep(item.attr.jid);
@@ -78,7 +76,7 @@ module:hook("iq/self/jabber:iq:roster:query", function(event)
 						local r_item = roster[jid];
 						if r_item then
 							local to_bare = node and (node.."@"..host) or host; -- bare JID
-							if r_item.subscription == "both" or r_item.subscription == "from" or (roster.pending and roster.pending[jid]) then
+							if r_item.subscription == "both" or r_item.subscription == "from" or roster[false].pending[jid] then
 								core_post_stanza(session, st.presence({type="unsubscribed", from=session.full_jid, to=to_bare}));
 							end
 							if r_item.subscription == "both" or r_item.subscription == "to" or r_item.ask then
@@ -144,8 +142,8 @@ module:hook_global("user-deleted", function(event)
 	local bare = username .. "@" .. host;
 	local roster = rm_load_roster(username, host);
 	for jid, item in pairs(roster) do
-		if jid and jid ~= "pending" then
-			if item.subscription == "both" or item.subscription == "from" or (roster.pending and roster.pending[jid]) then
+		if jid then
+			if item.subscription == "both" or item.subscription == "from" or roster[false].pending[jid] then
 				module:send(st.presence({type="unsubscribed", from=bare, to=jid}));
 			end
 			if item.subscription == "both" or item.subscription == "to" or item.ask then

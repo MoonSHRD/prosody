@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -10,8 +10,8 @@ local tostring, setmetatable = tostring, setmetatable;
 local pairs, next= pairs, next;
 
 local hosts = hosts;
-local full_sessions = full_sessions;
-local bare_sessions = bare_sessions;
+local full_sessions = prosody.full_sessions;
+local bare_sessions = prosody.bare_sessions;
 
 local logger = require "util.logger";
 local log = logger.init("sessionmanager");
@@ -24,9 +24,9 @@ local uuid_generate = require "util.uuid".generate;
 local initialize_filters = require "util.filters".initialize;
 local gettime = require "socket".gettime;
 
-module "sessionmanager"
+local _ENV = nil;
 
-function new_session(conn)
+local function new_session(conn)
 	local session = { conn = conn, type = "c2s_unauthed", conntime = gettime() };
 	local filter = initialize_filters(session);
 	local w = conn.write;
@@ -37,14 +37,19 @@ function new_session(conn)
 		if t then
 			t = filter("bytes/out", tostring(t));
 			if t then
-				return w(conn, t);
+				local ret, err = w(conn, t);
+				if not ret then
+					session.log("debug", "Error writing to connection: %s", tostring(err));
+					return false, err;
+				end
 			end
 		end
+		return true;
 	end
 	session.ip = conn:ip();
 	local conn_name = "c2s"..tostring(session):match("[a-f0-9]+$");
 	session.log = logger.init(conn_name);
-		
+
 	return session;
 end
 
@@ -54,11 +59,11 @@ local resting_session = { -- Resting, not dead
 		close = function (session)
 			session.log("debug", "Attempt to close already-closed session");
 		end;
-		filter = function (type, data) return data; end;
+		filter = function (type, data) return data; end; --luacheck: ignore 212/type
 	}; resting_session.__index = resting_session;
 
-function retire_session(session)
-	local log = session.log or log;
+local function retire_session(session)
+	local log = session.log or log; --luacheck: ignore 431/log
 	for k in pairs(session) do
 		if k ~= "log" and k ~= "id" then
 			session[k] = nil;
@@ -70,22 +75,22 @@ function retire_session(session)
 	return setmetatable(session, resting_session);
 end
 
-function destroy_session(session, err)
+local function destroy_session(session, err)
 	(session.log or log)("debug", "Destroying session for %s (%s@%s)%s", session.full_jid or "(unknown)", session.username or "(unknown)", session.host or "(unknown)", err and (": "..err) or "");
 	if session.destroyed then return; end
-	
+
 	-- Remove session/resource from user's session list
 	if session.full_jid then
 		local host_session = hosts[session.host];
-		
+
 		-- Allow plugins to prevent session destruction
 		if host_session.events.fire_event("pre-resource-unbind", {session=session, error=err}) then
 			return;
 		end
-		
+
 		host_session.sessions[session.username].sessions[session.resource] = nil;
 		full_sessions[session.full_jid] = nil;
-		
+
 		if not next(host_session.sessions[session.username].sessions) then
 			log("debug", "All resources of %s are now offline", session.username);
 			host_session.sessions[session.username] = nil;
@@ -94,11 +99,11 @@ function destroy_session(session, err)
 
 		host_session.events.fire_event("resource-unbind", {session=session, error=err});
 	end
-	
+
 	retire_session(session);
 end
 
-function make_authenticated(session, username)
+local function make_authenticated(session, username)
 	username = nodeprep(username);
 	if not username or #username == 0 then return nil, "Invalid username"; end
 	session.username = username;
@@ -111,15 +116,25 @@ end
 
 -- returns true, nil on success
 -- returns nil, err_type, err, err_message on failure
-function bind_resource(session, resource)
+local function bind_resource(session, resource)
 	if not session.username then return nil, "auth", "not-authorized", "Cannot bind resource before authentication"; end
 	if session.resource then return nil, "cancel", "not-allowed", "Cannot bind multiple resources on a single connection"; end
 	-- We don't support binding multiple resources
 
+	local event_payload = { session = session, resource = resource };
+	if hosts[session.host].events.fire_event("pre-resource-bind", event_payload) == false then
+		local err = event_payload.error;
+		if err then return nil, err.type, err.condition, err.text; end
+		return nil, "cancel", "not-allowed";
+	else
+		-- In case a plugin wants to poke at it
+		resource = event_payload.resource;
+	end
+
 	resource = resourceprep(resource);
 	resource = resource ~= "" and resource or uuid_generate();
 	--FIXME: Randomly-generated resources must be unique per-user, and never conflict with existing
-	
+
 	if not hosts[session.host].sessions[session.username] then
 		local sessions = { sessions = {} };
 		hosts[session.host].sessions[session.username] = sessions;
@@ -156,12 +171,12 @@ function bind_resource(session, resource)
 			end
 		end
 	end
-	
+
 	session.resource = resource;
 	session.full_jid = session.username .. '@' .. session.host .. '/' .. resource;
 	hosts[session.host].sessions[session.username].sessions[resource] = session;
 	full_sessions[session.full_jid] = session;
-	
+
 	local err;
 	session.roster, err = rm_load_roster(session.username, session.host);
 	if err then
@@ -176,18 +191,18 @@ function bind_resource(session, resource)
 		session.log("error", "Roster loading failed: %s", err);
 		return nil, "cancel", "internal-server-error", "Error loading roster";
 	end
-	
+
 	hosts[session.host].events.fire_event("resource-bind", {session=session});
-	
+
 	return true;
 end
 
-function send_to_available_resources(user, host, stanza)
-	local jid = user.."@"..host;
+local function send_to_available_resources(username, host, stanza)
+	local jid = username.."@"..host;
 	local count = 0;
 	local user = bare_sessions[jid];
 	if user then
-		for k, session in pairs(user.sessions) do
+		for _, session in pairs(user.sessions) do
 			if session.presence then
 				session.send(stanza);
 				count = count + 1;
@@ -197,12 +212,12 @@ function send_to_available_resources(user, host, stanza)
 	return count;
 end
 
-function send_to_interested_resources(user, host, stanza)
-	local jid = user.."@"..host;
+local function send_to_interested_resources(username, host, stanza)
+	local jid = username.."@"..host;
 	local count = 0;
 	local user = bare_sessions[jid];
 	if user then
-		for k, session in pairs(user.sessions) do
+		for _, session in pairs(user.sessions) do
 			if session.interested then
 				session.send(stanza);
 				count = count + 1;
@@ -212,4 +227,12 @@ function send_to_interested_resources(user, host, stanza)
 	return count;
 end
 
-return _M;
+return {
+	new_session = new_session;
+	retire_session = retire_session;
+	destroy_session = destroy_session;
+	make_authenticated = make_authenticated;
+	bind_resource = bind_resource;
+	send_to_available_resources = send_to_available_resources;
+	send_to_interested_resources = send_to_interested_resources;
+};

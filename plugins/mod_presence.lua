@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -10,7 +10,7 @@ local log = module._log;
 
 local require = require;
 local pairs = pairs;
-local t_concat, t_insert = table.concat, table.insert;
+local t_concat = table.concat;
 local s_find = string.find;
 local tonumber = tonumber;
 
@@ -27,42 +27,20 @@ local NULL = {};
 local rostermanager = require "core.rostermanager";
 local sessionmanager = require "core.sessionmanager";
 
-local function select_top_resources(user)
-	local priority = 0;
-	local recipients = {};
-	for _, session in pairs(user.sessions) do -- find resource with greatest priority
-		if session.presence then
-			-- TODO check active privacy list for session
-			local p = session.priority;
-			if p > priority then
-				priority = p;
-				recipients = {session};
-			elseif p == priority then
-				t_insert(recipients, session);
-			end
-		end
-	end
-	return recipients;
-end
-local function recalc_resource_map(user)
-	if user then
-		user.top_resources = select_top_resources(user);
-		if #user.top_resources == 0 then user.top_resources = nil; end
-	end
-end
+local recalc_resource_map = require "util.presence".recalc_resource_map;
 
-local ignore_presence_priority = module:get_option("ignore_presence_priority");
+local ignore_presence_priority = module:get_option_boolean("ignore_presence_priority", false);
 
 function handle_normal_presence(origin, stanza)
 	if ignore_presence_priority then
-		local priority = stanza:child_with_name("priority");
+		local priority = stanza:get_child("priority");
 		if priority and priority[1] ~= "0" then
 			for i=#priority.tags,1,-1 do priority.tags[i] = nil; end
 			for i=#priority,1,-1 do priority[i] = nil; end
 			priority[1] = "0";
 		end
 	end
-	local priority = stanza:child_with_name("priority");
+	local priority = stanza:get_child("priority");
 	if priority and #priority > 0 then
 		priority = t_concat(priority);
 		if s_find(priority, "^[+-]?[0-9]+$") then
@@ -90,6 +68,7 @@ function handle_normal_presence(origin, stanza)
 		end
 	end
 	if stanza.attr.type == nil and not origin.presence then -- initial presence
+		module:fire_event("presence/initial", { origin = origin, stanza = stanza } );
 		origin.presence = stanza; -- FIXME repeated later
 		local probe = st.presence({from = origin.full_jid, type = "probe"});
 		for jid, item in pairs(roster) do -- probe all contacts we are subscribed to
@@ -105,10 +84,8 @@ function handle_normal_presence(origin, stanza)
 				res.presence.attr.to = nil;
 			end
 		end
-		if roster.pending then -- resend incoming subscription requests
-			for jid in pairs(roster.pending) do
-				origin.send(st.presence({type="subscribe", from=jid})); -- TODO add to attribute? Use original?
-			end
+		for jid in pairs(roster[false].pending) do -- resend incoming subscription requests
+			origin.send(st.presence({type="subscribe", from=jid})); -- TODO add to attribute? Use original?
 		end
 		local request = st.presence({type="subscribe", from=origin.username.."@"..origin.host});
 		for jid, item in pairs(roster) do -- resend outgoing subscription requests
@@ -227,7 +204,7 @@ function handle_inbound_presence_subscriptions_and_probes(origin, stanza, from_b
 	local st_from, st_to = stanza.attr.from, stanza.attr.to;
 	stanza.attr.from, stanza.attr.to = from_bare, to_bare;
 	log("debug", "inbound presence %s from %s for %s", stanza.attr.type, from_bare, to_bare);
-	
+
 	if stanza.attr.type == "probe" then
 		local result, err = rostermanager.is_contact_subscribed(node, host, from_bare);
 		if result then
@@ -312,7 +289,7 @@ module:hook("presence/bare", function(data)
 		if t ~= nil and t ~= "unavailable" and t ~= "error" then -- check for subscriptions and probes sent to bare JID
 			return handle_inbound_presence_subscriptions_and_probes(origin, stanza, jid_bare(stanza.attr.from), jid_bare(stanza.attr.to));
 		end
-	
+
 		local user = bare_sessions[to];
 		if user then
 			for _, session in pairs(user.sessions) do
@@ -347,7 +324,7 @@ end);
 module:hook("presence/host", function(data)
 	-- inbound presence to the host
 	local stanza = data.stanza;
-	
+
 	local from_bare = jid_bare(stanza.attr.from);
 	local t = stanza.attr.type;
 	if t == "probe" then

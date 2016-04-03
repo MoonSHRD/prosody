@@ -22,8 +22,8 @@ local is_windows = (_ and windows) or os.getenv("WINDIR");
 local coroutine, io, math, string, table =
       coroutine, io, math, string, table;
 
-local ipairs, next, pairs, print, setmetatable, tostring, assert, error, unpack, select, type=
-      ipairs, next, pairs, print, setmetatable, tostring, assert, error, unpack, select, type;
+local ipairs, next, pairs, print, setmetatable, tostring, assert, error, select, type, unpack=
+      ipairs, next, pairs, print, setmetatable, tostring, assert, error, select, type, table.unpack or unpack;
 
 local ztact = { -- public domain 20080404 lua@ztact.com
 	get = function(parent, ...)
@@ -71,8 +71,8 @@ local get, set = ztact.get, ztact.set;
 local default_timeout = 15;
 
 -------------------------------------------------- module dns
-module('dns')
-local dns = _M;
+local _ENV = nil;
+local dns = {};
 
 
 -- dns type & class codes ------------------------------ dns type & class codes
@@ -210,15 +210,6 @@ function cache_metatable.__tostring(cache)
 		end
 	end
 	return table.concat(t);
-end
-
-
-function resolver:new()    -- - - - - - - - - - - - - - - - - - - - - resolver
-	local r = { active = {}, cache = {}, unsorted = {} };
-	setmetatable(r, resolver);
-	setmetatable(r.cache, cache_metatable);
-	setmetatable(r.unsorted, { __mode = 'kv' });
-	return r;
 end
 
 
@@ -629,7 +620,7 @@ function resolver:getsocket(servernum)    -- - - - - - - - - - - - - getsocket
 	if peer:find(":") then
 		sock, err = socket.udp6();
 	else
-		sock, err = socket.udp();
+		sock, err = (socket.udp4 or socket.udp)();
 	end
 	if sock and self.socket_wrapper then sock, err = self.socket_wrapper(sock, self); end
 	if not sock then
@@ -1054,8 +1045,6 @@ end
 
 
 function dns.resolver ()    -- - - - - - - - - - - - - - - - - - - - - resolver
-	-- this function seems to be redundant with resolver.new ()
-
 	local r = { active = {}, cache = {}, unsorted = {}, wanted = {}, best_server = 1 };
 	setmetatable (r, resolver);
 	setmetatable (r.cache, cache_metatable);
