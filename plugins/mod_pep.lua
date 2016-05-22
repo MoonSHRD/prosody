@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -46,7 +46,8 @@ local function subscription_presence(user_bare, recipient)
 	return is_contact_subscribed(username, host, recipient_bare);
 end
 
-local function publish(session, node, id, item)
+module:hook("pep-publish-item", function (event)
+	local session, node, id, item = event.session, event.node, event.id, event.item;
 	item.attr.xmlns = nil;
 	local disable = #item.tags ~= 1 or #item.tags[1] == 0;
 	if #item.tags == 0 then item.name = "retract"; end
@@ -77,7 +78,8 @@ local function publish(session, node, id, item)
 			core_post_stanza(session, stanza);
 		end
 	end
-end
+end);
+
 local function publish_all(user, recipient, session)
 	local d = data[user];
 	local notify = recipients[user] and recipients[user][recipient];
@@ -180,7 +182,9 @@ module:hook("iq/bare/http://jabber.org/protocol/pubsub:pubsub", function(event)
 				local id = payload.attr.id or "1";
 				payload.attr.id = id;
 				session.send(st.reply(stanza));
-				publish(session, node, id, st.clone(payload));
+				module:fire_event("pep-publish-item", {
+					node = node, actor = session.jid, id = id, session = session, item = st.clone(payload);
+				});
 				return true;
 			end
 		end
@@ -271,19 +275,19 @@ module:hook("iq-result/bare/disco", function(event)
 end);
 
 module:hook("account-disco-info", function(event)
-	local stanza = event.stanza;
-	stanza:tag('identity', {category='pubsub', type='pep'}):up();
-	stanza:tag('feature', {var='http://jabber.org/protocol/pubsub#publish'}):up();
+	local reply = event.reply;
+	reply:tag('identity', {category='pubsub', type='pep'}):up();
+	reply:tag('feature', {var='http://jabber.org/protocol/pubsub#publish'}):up();
 end);
 
 module:hook("account-disco-items", function(event)
-	local stanza = event.stanza;
-	local bare = stanza.attr.to;
+	local reply = event.reply;
+	local bare = reply.attr.to;
 	local user_data = data[bare];
 
 	if user_data then
 		for node, _ in pairs(user_data) do
-			stanza:tag('item', {jid=bare, node=node}):up(); -- TODO we need to handle queries to these nodes
+			reply:tag('item', {jid=bare, node=node}):up(); -- TODO we need to handle queries to these nodes
 		end
 	end
 end);

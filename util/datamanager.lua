@@ -17,7 +17,9 @@ local io_open = io.open;
 local os_remove = os.remove;
 local os_rename = os.rename;
 local tonumber = tonumber;
+local tostring = tostring;
 local next = next;
+local type = type;
 local t_insert = table.insert;
 local t_concat = table.concat;
 local envloadfile = require"util.envload".envloadfile;
@@ -43,7 +45,7 @@ pcall(function()
 	fallocate = pposix.fallocate or fallocate;
 end);
 
-module "datamanager"
+local _ENV = nil;
 
 ---- utils -----
 local encode, decode;
@@ -74,7 +76,7 @@ local callbacks = {};
 
 ------- API -------------
 
-function set_data_path(path)
+local function set_data_path(path)
 	log("debug", "Setting data path to: %s", path);
 	data_path = path;
 end
@@ -87,14 +89,14 @@ local function callback(username, host, datastore, data)
 
 	return username, host, datastore, data;
 end
-function add_callback(func)
+local function add_callback(func)
 	if not callbacks[func] then -- Would you really want to set the same callback more than once?
 		callbacks[func] = true;
 		callbacks[#callbacks+1] = func;
 		return true;
 	end
 end
-function remove_callback(func)
+local function remove_callback(func)
 	if callbacks[func] then
 		for i, f in ipairs(callbacks) do
 			if f == func then
@@ -106,7 +108,7 @@ function remove_callback(func)
 	end
 end
 
-function getpath(username, host, datastore, ext, create)
+local function getpath(username, host, datastore, ext, create)
 	ext = ext or "dat";
 	host = (host and encode(host)) or "_global";
 	username = username and encode(username);
@@ -119,7 +121,7 @@ function getpath(username, host, datastore, ext, create)
 	end
 end
 
-function load(username, host, datastore)
+local function load(username, host, datastore)
 	local data, ret = envloadfile(getpath(username, host, datastore), {});
 	if not data then
 		local mode = lfs.attributes(getpath(username, host, datastore), "mode");
@@ -144,24 +146,26 @@ end
 local function atomic_store(filename, data)
 	local scratch = filename.."~";
 	local f, ok, msg;
-	repeat
-		f, msg = io_open(scratch, "w");
-		if not f then break end
 
-		ok, msg = f:write(data);
-		if not ok then break end
+	f, msg = io_open(scratch, "w");
+	if not f then
+		return nil, msg;
+	end
 
-		ok, msg = f:close();
-		f = nil; -- no longer valid
-		if not ok then break end
+	ok, msg = f:write(data);
+	if not ok then
+		f:close();
+		os_remove(scratch);
+		return nil, msg;
+	end
 
-		return os_rename(scratch, filename);
-	until false;
+	ok, msg = f:close();
+	if not ok then
+		os_remove(scratch);
+		return nil, msg;
+	end
 
-	-- Cleanup
-	if f then f:close(); end
-	os_remove(scratch);
-	return nil, msg;
+	return os_rename(scratch, filename);
 end
 
 if prosody and prosody.platform ~= "posix" then
@@ -176,7 +180,7 @@ if prosody and prosody.platform ~= "posix" then
 	end
 end
 
-function store(username, host, datastore, data)
+local function store(username, host, datastore, data)
 	if not data then
 		data = {};
 	end
@@ -210,33 +214,62 @@ function store(username, host, datastore, data)
 	return true;
 end
 
-function list_append(username, host, datastore, data)
+-- Append a blob of data to a file
+local function append(username, host, datastore, ext, data)
+	if type(data) ~= "string" then return; end
+	local filename = getpath(username, host, datastore, ext, true);
+
+	local ok;
+	local f, msg = io_open(filename, "r+");
+	if not f then
+		-- File did probably not exist, let's create it
+		f, msg = io_open(filename, "w");
+		if not f then
+			return nil, msg, "open";
+		end
+	end
+
+	local pos = f:seek("end");
+	ok, msg = fallocate(f, pos, #data);
+	if not ok then
+		log("warn", "fallocate() failed: %s", tostring(msg));
+		-- This doesn't work on every file system
+	end
+
+	if f:seek() ~= pos then
+		log("debug", "fallocate() changed file position");
+		f:seek("set", pos);
+	end
+
+	ok, msg = f:write(data);
+	if not ok then
+		f:close();
+		return ok, msg, "write";
+	end
+
+	ok, msg = f:close();
+	if not ok then
+		return ok, msg;
+	end
+
+	return true, pos;
+end
+
+local function list_append(username, host, datastore, data)
 	if not data then return; end
 	if callback(username, host, datastore) == false then return true; end
 	-- save the datastore
-	local f, msg = io_open(getpath(username, host, datastore, "list", true), "r+");
-	if not f then
-		f, msg = io_open(getpath(username, host, datastore, "list", true), "w");
-	end
-	if not f then
-		log("error", "Unable to write to %s storage ('%s') for user: %s@%s", datastore, msg, username or "nil", host or "nil");
-		return;
-	end
-	local data = "item(" ..  serialize(data) .. ");\n";
-	local pos = f:seek("end");
-	local ok, msg = fallocate(f, pos, #data);
-	f:seek("set", pos);
-	if ok then
-		f:write(data);
-	else
+
+	data = "item(" ..  serialize(data) .. ");\n";
+	local ok, msg = append(username, host, datastore, "list", data);
+	if not ok then
 		log("error", "Unable to write to %s storage ('%s') for user: %s@%s", datastore, msg, username or "nil", host or "nil");
 		return ok, msg;
 	end
-	f:close();
 	return true;
 end
 
-function list_store(username, host, datastore, data)
+local function list_store(username, host, datastore, data)
 	if not data then
 		data = {};
 	end
@@ -260,7 +293,7 @@ function list_store(username, host, datastore, data)
 	return true;
 end
 
-function list_load(username, host, datastore)
+local function list_load(username, host, datastore)
 	local items = {};
 	local data, ret = envloadfile(getpath(username, host, datastore, "list"), {item = function(i) t_insert(items, i); end});
 	if not data then
@@ -288,7 +321,7 @@ local type_map = {
 	list = "list";
 }
 
-function users(host, store, typ)
+local function users(host, store, typ)
 	typ = type_map[typ or "keyval"];
 	local store_dir = format("%s/%s/%s", data_path, encode(host), store);
 
@@ -307,7 +340,7 @@ function users(host, store, typ)
 	end, state;
 end
 
-function stores(username, host, typ)
+local function stores(username, host, typ)
 	typ = type_map[typ or "keyval"];
 	local store_dir = format("%s/%s/", data_path, encode(host));
 
@@ -347,7 +380,7 @@ local function do_remove(path)
 	return true
 end
 
-function purge(username, host)
+local function purge(username, host)
 	local host_dir = format("%s/%s/", data_path, encode(host));
 	local ok, iter, state, var = pcall(lfs.dir, host_dir);
 	if not ok then
@@ -367,6 +400,20 @@ function purge(username, host)
 	return #errs == 0, t_concat(errs, ", ");
 end
 
-_M.path_decode = decode;
-_M.path_encode = encode;
-return _M;
+return {
+	set_data_path = set_data_path;
+	add_callback = add_callback;
+	remove_callback = remove_callback;
+	getpath = getpath;
+	load = load;
+	store = store;
+	append_raw = append;
+	list_append = list_append;
+	list_store = list_store;
+	list_load = list_load;
+	users = users;
+	stores = stores;
+	purge = purge;
+	path_decode = decode;
+	path_encode = encode;
+};

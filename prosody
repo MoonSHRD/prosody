@@ -11,10 +11,10 @@
 
 -- Will be modified by configure script if run --
 
-CFG_SOURCEDIR=os.getenv("PROSODY_SRCDIR");
-CFG_CONFIGDIR=os.getenv("PROSODY_CFGDIR");
-CFG_PLUGINDIR=os.getenv("PROSODY_PLUGINDIR");
-CFG_DATADIR=os.getenv("PROSODY_DATADIR");
+CFG_SOURCEDIR=CFG_SOURCEDIR or os.getenv("PROSODY_SRCDIR");
+CFG_CONFIGDIR=CFG_CONFIGDIR or os.getenv("PROSODY_CFGDIR");
+CFG_PLUGINDIR=CFG_PLUGINDIR or os.getenv("PROSODY_PLUGINDIR");
+CFG_DATADIR=CFG_DATADIR or os.getenv("PROSODY_DATADIR");
 
 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 
@@ -41,6 +41,12 @@ if CFG_DATADIR then
 	if os.getenv("HOME") then
 		CFG_DATADIR = CFG_DATADIR:gsub("^~", os.getenv("HOME"));
 	end
+end
+
+if #arg > 0 and arg[1] ~= "--config" then
+	print("Unknown command-line option: "..tostring(arg[1]));
+	print("Perhaps you meant to use prosodyctl instead?");
+	return 1;
 end
 
 -- Global 'prosody' object
@@ -121,6 +127,7 @@ end
 
 function load_libraries()
 	-- Load socket framework
+	socket = require "socket";
 	server = require "net.server"
 end	
 
@@ -151,9 +158,12 @@ function sandbox_require()
 	-- for neat sandboxing of modules
 	local _realG = _G;
 	local _real_require = require;
-	if not getfenv then
+	local getfenv = getfenv or function (f)
 		-- FIXME: This is a hack to replace getfenv() in Lua 5.2
-		function getfenv(f) return debug.getupvalue(debug.getinfo(f or 1).func, 1); end
+		local name, env = debug.getupvalue(debug.getinfo(f or 1).func, 1);
+		if name == "_ENV" then
+			return env;
+		end
 	end
 	function require(...)
 		local curr_env = getfenv(2);
@@ -262,18 +272,16 @@ function init_global_state()
 	end
 
 	-- Function to initiate prosody shutdown
-	function prosody.shutdown(reason)
+	function prosody.shutdown(reason, code)
 		log("info", "Shutting down: %s", reason or "unknown reason");
 		prosody.shutdown_reason = reason;
-		prosody.events.fire_event("server-stopping", {reason = reason});
+		prosody.shutdown_code = code;
+		prosody.events.fire_event("server-stopping", {
+			reason = reason;
+			code = code;
+		});
 		server.setquitting(true);
 	end
-
-	-- Load SSL settings from config, and create a ctx table
-	local certmanager = require "core.certmanager";
-	local global_ssl_ctx = certmanager.create_context("*", "server");
-	prosody.global_ssl_ctx = global_ssl_ctx;
-
 end
 
 function read_version()
@@ -295,6 +303,7 @@ function load_secondary_libraries()
 	require "util.import"
 	require "util.xmppstream"
 	require "core.stanza_router"
+	require "core.statsmanager"
 	require "core.hostmanager"
 	require "core.portmanager"
 	require "core.modulemanager"
@@ -373,8 +382,10 @@ function loop()
 		prosody.events.fire_event("very-bad-error", {error = err, traceback = traceback});
 	end
 	
+	local sleep = require"socket".sleep;
+
 	while select(2, xpcall(server.loop, catch_uncaught_error)) ~= "quitting" do
-		socket.sleep(0.2);
+		sleep(0.2);
 	end
 end
 
@@ -411,3 +422,4 @@ cleanup();
 prosody.events.fire_event("server-stopped");
 log("info", "Shutdown complete");
 
+os.exit(prosody.shutdown_code)

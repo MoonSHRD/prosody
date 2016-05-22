@@ -2,7 +2,7 @@
 local st = require "util.stanza";
 local lxp = require "lxp";
 
-module("xml")
+local _ENV = nil;
 
 local parse_xml = (function()
 	local ns_prefixes = {
@@ -11,6 +11,7 @@ local parse_xml = (function()
 	local ns_separator = "\1";
 	local ns_pattern = "^([^"..ns_separator.."]*)"..ns_separator.."?(.*)$";
 	return function(xml)
+		--luacheck: ignore 212/self
 		local handler = {};
 		local stanza = st.stanza("root");
 		function handler:StartElement(tagname, attr)
@@ -26,8 +27,8 @@ local parse_xml = (function()
 				attr[i] = nil;
 				local ns, nm = k:match(ns_pattern);
 				if nm ~= "" then
-					ns = ns_prefixes[ns]; 
-					if ns then 
+					ns = ns_prefixes[ns];
+					if ns then
 						attr[ns..":"..nm] = attr[k];
 						attr[k] = nil;
 					end
@@ -38,7 +39,7 @@ local parse_xml = (function()
 		function handler:CharacterData(data)
 			stanza:text(data);
 		end
-		function handler:EndElement(tagname)
+		function handler:EndElement()
 			stanza:up();
 		end
 		local parser = lxp.new(handler, "\1");
@@ -53,5 +54,6 @@ local parse_xml = (function()
 	end;
 end)();
 
-parse = parse_xml;
-return _M;
+return {
+	parse = parse_xml;
+};
