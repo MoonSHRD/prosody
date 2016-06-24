@@ -18,7 +18,7 @@ INSTALLEDDATA = $(DATADIR)
 all: prosody.install prosodyctl.install prosody.cfg.lua.install prosody.version
 	$(MAKE) -C util-src install
 ifeq ($(EXCERTS),yes)
-	$(MAKE) -C certs localhost.crt example.com.crt || true
+	-$(MAKE) -C certs localhost.crt example.com.crt
 endif
 
 install: prosody.install prosodyctl.install prosody.cfg.lua.install util/encodings.so util/encodings.so util/pposix.so util/signal.so
@@ -31,8 +31,9 @@ install: prosody.install prosodyctl.install prosody.cfg.lua.install util/encodin
 	install -m755 ./prosodyctl.install $(BIN)/prosodyctl
 	install -m644 core/*.lua $(SOURCE)/core
 	install -m644 net/*.lua $(SOURCE)/net
-	install -d $(SOURCE)/net/http
+	install -d $(SOURCE)/net/http $(SOURCE)/net/websocket
 	install -m644 net/http/*.lua $(SOURCE)/net/http
+	install -m644 net/websocket/*.lua $(SOURCE)/net/websocket
 	install -m644 util/*.lua $(SOURCE)/util
 	install -m644 util/*.so $(SOURCE)/util
 	install -d $(SOURCE)/util/sasl
@@ -40,8 +41,8 @@ install: prosody.install prosodyctl.install prosody.cfg.lua.install util/encodin
 	umask 0022 && cp -r plugins/* $(MODULES)
 	install -m644 certs/* $(CONFIG)/certs
 	install -m644 man/prosodyctl.man $(MAN)/man1/prosodyctl.1
-	test -e $(CONFIG)/prosody.cfg.lua || install -m644 prosody.cfg.lua.install $(CONFIG)/prosody.cfg.lua
-	test -e prosody.version && install -m644 prosody.version $(SOURCE)/prosody.version || true
+	test -f $(CONFIG)/prosody.cfg.lua || install -m644 prosody.cfg.lua.install $(CONFIG)/prosody.cfg.lua
+	-test -f prosody.version && install -m644 prosody.version $(SOURCE)/prosody.version
 	$(MAKE) install -C util-src
 
 clean:
@@ -50,6 +51,10 @@ clean:
 	rm -f prosody.cfg.lua.install
 	rm -f prosody.version
 	$(MAKE) clean -C util-src
+
+test:
+	cd tests && $(RUNWITH) test.lua 0
+	# Skipping: cd tests && RUNWITH=$(RUNWITH) ./test_util_json.sh
 
 util/%.so:
 	$(MAKE) install -C util-src
@@ -64,8 +69,16 @@ util/%.so:
 prosody.cfg.lua.install: prosody.cfg.lua.dist
 	sed 's|certs/|$(INSTALLEDCONFIG)/certs/|' $^ > $@
 
-prosody.version: $(wildcard prosody.release .hg/dirstate)
-	test -e .hg/dirstate && \
-		hexdump -n6 -e'6/1 "%02x"' .hg/dirstate > $@ || true
-	test -f prosody.release && \
-		cp prosody.release $@ || true
+%.version: %.release
+	cp $^ $@
+
+%.version: .hg_archival.txt
+	sed -n 's/^node: \(............\).*/\1/p' $^ > $@
+
+%.version: .hg/dirstate
+	hexdump -n6 -e'6/1 "%02x"' $^ > $@
+
+%.version:
+	echo unknown > $@
+
+
