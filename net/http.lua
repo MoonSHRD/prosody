@@ -1,12 +1,11 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
 
-local socket = require "socket"
 local b64 = require "util.encodings".base64.encode;
 local url = require "socket.url"
 local httpstream_new = require "net.http.parser".new;
@@ -24,9 +23,11 @@ local assert, error = assert, error
 
 local log = require "util.logger".init("http");
 
-module "http"
+local _ENV = nil;
 
 local requests = {}; -- Open requests
+
+local function make_id(req) return (tostring(req):match("%x+$")); end
 
 local listener = { default_port = 80, default_mode = "*a" };
 
@@ -37,7 +38,7 @@ function listener.onconnect(conn)
 	if req.query then
 		t_insert(request_line, 4, "?"..req.query);
 	end
-	
+
 	conn:write(t_concat(request_line));
 	local t = { [2] = ": ", [4] = "\r\n" };
 	for k, v in pairs(req.headers) do
@@ -45,7 +46,7 @@ function listener.onconnect(conn)
 		conn:write(t_concat(t));
 	end
 	conn:write("\r\n");
-	
+
 	if req.body then
 		conn:write(req.body);
 	end
@@ -76,6 +77,13 @@ function listener.ondetach(conn)
 	requests[conn] = nil;
 end
 
+local function destroy_request(request)
+	if request.conn then
+		request.conn = nil;
+		request.handler:close()
+	end
+end
+
 local function request_reader(request, data, err)
 	if not request.parser then
 		local function error_cb(reason)
@@ -85,12 +93,12 @@ local function request_reader(request, data, err)
 			end
 			destroy_request(request);
 		end
-		
+
 		if not data then
 			error_cb(err);
 			return;
 		end
-		
+
 		local function success_cb(r)
 			if request.callback then
 				request.callback(r.body, r.code, r, request);
@@ -107,20 +115,29 @@ local function request_reader(request, data, err)
 end
 
 local function handleerr(err) log("error", "Traceback[http]: %s", traceback(tostring(err), 2)); end
-function request(u, ex, callback)
+local function log_if_failed(id, ret, ...)
+	if not ret then
+		log("error", "Request '%s': error in callback: %s", id, tostring((...)));
+	end
+	return ...;
+end
+
+local function request(u, ex, callback)
 	local req = url.parse(u);
-	
+
 	if not (req and req.host) then
 		callback(nil, 0, req);
 		return nil, "invalid-url";
 	end
-	
+
 	if not req.path then
 		req.path = "/";
 	end
-	
+
+	req.id = ex and ex.id or make_id(req);
+
 	local method, headers, body;
-	
+
 	local host, port = req.host, req.port;
 	local host_header = host;
 	if (port == "80" and req.scheme == "http")
@@ -134,7 +151,7 @@ function request(u, ex, callback)
 		["Host"] = host_header;
 		["User-Agent"] = "Prosody XMPP Server";
 	};
-	
+
 	if req.userinfo then
 		headers["Authorization"] = "Basic "..b64(req.userinfo);
 	end
@@ -154,34 +171,35 @@ function request(u, ex, callback)
 			end
 		end
 	end
-	
+
+	log("debug", "Making %s %s request '%s' to %s", req.scheme:upper(), method or "GET", req.id, (ex and ex.suppress_url and host_header) or u);
+
 	-- Attach to request object
 	req.method, req.headers, req.body = method, headers, body;
-	
+
 	local using_https = req.scheme == "https";
 	if using_https and not ssl_available then
 		error("SSL not available, unable to contact https URL");
 	end
 	local port_number = port and tonumber(port) or (using_https and 443 or 80);
-	
-	-- Connect the socket, and wrap it with net.server
-	local conn = socket.tcp();
-	conn:settimeout(10);
-	local ok, err = conn:connect(host, port_number);
-	if not ok and err ~= "timeout" then
-		callback(nil, 0, req);
-		return nil, err;
-	end
-	
+
 	local sslctx = false;
 	if using_https then
 		sslctx = ex and ex.sslctx or { mode = "client", protocol = "sslv23", options = { "no_sslv2", "no_sslv3" } };
 	end
 
-	req.handler, req.conn = assert(server.wrapclient(conn, host, port_number, listener, "*a", sslctx));
+	local handler, conn = server.addclient(host, port_number, listener, "*a", sslctx)
+	if not handler then
+		callback(nil, 0, req);
+		return nil, conn;
+	end
+	req.handler, req.conn = handler, conn
 	req.write = function (...) return req.handler:write(...); end
-	
-	req.callback = function (content, code, request, response) log("debug", "Calling callback, status %s", code or "---"); return select(2, xpcall(function () return callback(content, code, request, response) end, handleerr)); end
+
+	req.callback = function (content, code, request, response)
+		log("debug", "Request '%s': Calling callback, status %s", req.id, code or "---");
+		return log_if_failed(req.id, xpcall(function () return callback(content, code, request, response) end, handleerr));
+	end
 	req.reader = request_reader;
 	req.state = "status";
 
@@ -189,17 +207,12 @@ function request(u, ex, callback)
 	return req;
 end
 
-function destroy_request(request)
-	if request.conn then
-		request.conn = nil;
-		request.handler:close()
-	end
-end
-
-local urlencode, urldecode = util_http.urlencode, util_http.urldecode;
-local formencode, formdecode = util_http.formencode, util_http.formdecode;
-
-_M.urlencode, _M.urldecode = urlencode, urldecode;
-_M.formencode, _M.formdecode = formencode, formdecode;
-
-return _M;
+return {
+	request = request;
+	
+	-- COMPAT
+	urlencode = util_http.urlencode;
+	urldecode = util_http.urldecode;
+	formencode = util_http.formencode;
+	formdecode = util_http.formdecode;
+};

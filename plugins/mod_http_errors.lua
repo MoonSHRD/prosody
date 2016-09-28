@@ -43,7 +43,8 @@ local html = [[
         <p>$message</p>
         <p>$extra</p>
 </body>
-</html>]];
+</html>
+]];
 html = html:gsub("%s%s+", "");
 
 local entities = {
@@ -53,7 +54,7 @@ local entities = {
 
 local function tohtml(plain)
 	return (plain:gsub("[<>&'\"\n]", entities));
-	
+
 end
 
 local function get_page(code, extra)

@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -10,29 +10,28 @@
 local format = string.format;
 local setmetatable, rawset, pairs, ipairs, type =
 	setmetatable, rawset, pairs, ipairs, type;
-local io_open, io_write = io.open, io.write;
+local stdout = io.stdout;
+local io_open = io.open;
 local math_max, rep = math.max, string.rep;
 local os_date = os.date;
-local getstyle, setstyle = require "util.termcolours".getstyle, require "util.termcolours".setstyle;
-
-if os.getenv("__FLUSH_LOG") then
-	local io_flush = io.flush;
-	local _io_write = io_write;
-	io_write = function(...) _io_write(...); io_flush(); end
-end
+local getstyle, getstring = require "util.termcolours".getstyle, require "util.termcolours".getstring;
+local tostring = tostring;
+local select = select;
+local unpack = table.unpack or unpack; --luacheck: ignore 113
 
 local config = require "core.configmanager";
 local logger = require "util.logger";
 local prosody = prosody;
 
 _G.log = logger.init("general");
+prosody.log = logger.init("general");
 
-module "loggingmanager"
+local _ENV = nil;
 
 -- The log config used if none specified in the config file (see reload_logging for initialization)
 local default_logging;
 local default_file_logging;
-local default_timestamp = "%b %d %H:%M:%S";
+local default_timestamp = "%b %d %H:%M:%S ";
 -- The actual config loggingmanager is using
 local logging_config;
 
@@ -45,16 +44,16 @@ local logging_levels = { "debug", "info", "warn", "error" }
 -- This function is called automatically when a new sink type is added [see apply_sink_rules()]
 local function add_rule(sink_config)
 	local sink_maker = log_sink_types[sink_config.to];
-	if sink_maker then
-		-- Create sink
-		local sink = sink_maker(sink_config);
-		
-		-- Set sink for all chosen levels
-		for level in pairs(get_levels(sink_config.levels or logging_levels)) do
-			logger.add_level_sink(level, sink);
-		end
-	else
-		-- No such sink type
+	if not sink_maker then
+		return; -- No such sink type
+	end
+
+	-- Create sink
+	local sink = sink_maker(sink_config);
+
+	-- Set sink for all chosen levels
+	for level in pairs(get_levels(sink_config.levels or logging_levels)) do
+		logger.add_level_sink(level, sink);
 	end
 end
 
@@ -63,7 +62,7 @@ end
 -- the log_sink_types table.
 function apply_sink_rules(sink_type)
 	if type(logging_config) == "table" then
-		
+
 		for _, level in ipairs(logging_levels) do
 			if type(logging_config[level]) == "string" then
 				local value = logging_config[level];
@@ -82,7 +81,7 @@ function apply_sink_rules(sink_type)
 				end
 			end
 		end
-		
+
 		for _, sink_config in ipairs(logging_config) do
 			if (type(sink_config) == "table" and sink_config.to == sink_type) then
 				add_rule(sink_config);
@@ -128,7 +127,7 @@ function get_levels(criteria, set)
 			end
 		end
 	end
-	
+
 	for _, level in ipairs(criteria) do
 		set[level] = true;
 	end
@@ -136,14 +135,14 @@ function get_levels(criteria, set)
 end
 
 -- Initialize config, etc. --
-function reload_logging()
+local function reload_logging()
 	local old_sink_types = {};
-	
+
 	for name, sink_maker in pairs(log_sink_types) do
 		old_sink_types[name] = sink_maker;
 		log_sink_types[name] = nil;
 	end
-	
+
 	logger.reset();
 
 	local debug_mode = config.get("*", "debug");
@@ -152,15 +151,13 @@ function reload_logging()
 	default_file_logging = {
 		{ to = "file", levels = { min = (debug_mode and "debug") or "info" }, timestamps = true }
 	};
-	default_timestamp = "%b %d %H:%M:%S";
 
 	logging_config = config.get("*", "log") or default_logging;
-	
-	
+
 	for name, sink_maker in pairs(old_sink_types) do
 		log_sink_types[name] = sink_maker;
 	end
-	
+
 	prosody.events.fire_event("logging-reloaded");
 end
 
@@ -170,107 +167,98 @@ prosody.events.add_handler("config-reloaded", reload_logging);
 --- Definition of built-in logging sinks ---
 
 -- Null sink, must enter log_sink_types *first*
-function log_sink_types.nowhere()
+local function log_to_nowhere()
 	return function () return false; end;
 end
+log_sink_types.nowhere = log_to_nowhere;
 
--- Column width for "source" (used by stdout and console)
-local sourcewidth = 20;
+local function log_to_file(sink_config, logfile)
+	logfile = logfile or io_open(sink_config.filename, "a+");
+	if not logfile then
+		return log_to_nowhere(sink_config);
+	end
+	local write = logfile.write;
 
-function log_sink_types.stdout(config)
-	local timestamps = config.timestamps;
-	
+	local timestamps = sink_config.timestamps;
+
 	if timestamps == true then
 		timestamps = default_timestamp; -- Default format
+	elseif timestamps then
+		timestamps = timestamps .. " ";
 	end
-	
+
+	if sink_config.buffer_mode ~= false then
+		logfile:setvbuf(sink_config.buffer_mode or "line");
+	end
+
+	-- Column width for "source" (used by stdout and console)
+	local sourcewidth = sink_config.source_width;
+
 	return function (name, level, message, ...)
-		sourcewidth = math_max(#name+2, sourcewidth);
-		local namelen = #name;
-		if timestamps then
-			io_write(os_date(timestamps), " ");
-		end
-		if ... then
-			io_write(name, rep(" ", sourcewidth-namelen), level, "\t", format(message, ...), "\n");
-		else
-			io_write(name, rep(" ", sourcewidth-namelen), level, "\t", message, "\n");
-		end
-	end
-end
-
-do
-	local do_pretty_printing = true;
-	
-	local logstyles = {};
-	if do_pretty_printing then
-		logstyles["info"] = getstyle("bold");
-		logstyles["warn"] = getstyle("bold", "yellow");
-		logstyles["error"] = getstyle("bold", "red");
-	end
-	function log_sink_types.console(config)
-		-- Really if we don't want pretty colours then just use plain stdout
-		if not do_pretty_printing then
-			return log_sink_types.stdout(config);
-		end
-		
-		local timestamps = config.timestamps;
-
-		if timestamps == true then
-			timestamps = default_timestamp; -- Default format
+		local n = select('#', ...);
+		if n ~= 0 then
+			local arg = { ... };
+			for i = 1, n do
+				arg[i] = tostring(arg[i]);
+			end
+			message = format(message, unpack(arg, 1, n));
 		end
 
-		return function (name, level, message, ...)
+		if sourcewidth then
 			sourcewidth = math_max(#name+2, sourcewidth);
-			local namelen = #name;
-			
-			if timestamps then
-				io_write(os_date(timestamps), " ");
-			end
-			io_write(name, rep(" ", sourcewidth-namelen));
-			setstyle(logstyles[level]);
-			io_write(level);
-			setstyle();
-			if ... then
-				io_write("\t", format(message, ...), "\n");
-			else
-				io_write("\t", message, "\n");
-			end
-		end
-	end
-end
-
-local empty_function = function () end;
-function log_sink_types.file(config)
-	local log = config.filename;
-	local logfile = io_open(log, "a+");
-	if not logfile then
-		return empty_function;
-	end
-	local write, flush = logfile.write, logfile.flush;
-
-	local timestamps = config.timestamps;
-
-	if timestamps == nil or timestamps == true then
-		timestamps = default_timestamp; -- Default format
-	end
-
-	return function (name, level, message, ...)
-		if timestamps then
-			write(logfile, os_date(timestamps), " ");
-		end
-		if ... then
-			write(logfile, name, "\t", level, "\t", format(message, ...), "\n");
+			name = name ..  rep(" ", sourcewidth-#name);
 		else
-			write(logfile, name, "\t" , level, "\t", message, "\n");
+			name = name .. "\t";
 		end
-		flush(logfile);
-	end;
+		write(logfile, timestamps and os_date(timestamps) or "", name, level, "\t", message, "\n");
+	end
+end
+log_sink_types.file = log_to_file;
+
+local function log_to_stdout(sink_config)
+	if not sink_config.timestamps then
+		sink_config.timestamps = false;
+	end
+	if sink_config.source_width == nil then
+		sink_config.source_width = 20;
+	end
+	return log_to_file(sink_config, stdout);
+end
+log_sink_types.stdout = log_to_stdout;
+
+local do_pretty_printing = true;
+
+local logstyles;
+if do_pretty_printing then
+	logstyles = {};
+	logstyles["info"] = getstyle("bold");
+	logstyles["warn"] = getstyle("bold", "yellow");
+	logstyles["error"] = getstyle("bold", "red");
 end
 
-function register_sink_type(name, sink_maker)
+local function log_to_console(sink_config)
+	-- Really if we don't want pretty colours then just use plain stdout
+	local logstdout = log_to_stdout(sink_config);
+	if not do_pretty_printing then
+		return logstdout;
+	end
+	return function (name, level, message, ...)
+		local logstyle = logstyles[level];
+		if logstyle then
+			level = getstring(logstyle, level);
+		end
+		return logstdout(name, level, message, ...);
+	end
+end
+log_sink_types.console = log_to_console;
+
+local function register_sink_type(name, sink_maker)
 	local old_sink_maker = log_sink_types[name];
 	log_sink_types[name] = sink_maker;
 	return old_sink_maker;
 end
 
-return _M;
+return {
+	reload_logging = reload_logging;
+	register_sink_type = register_sink_type;
+}

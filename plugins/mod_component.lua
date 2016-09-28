@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -36,11 +36,13 @@ function module.add_host(module)
 	
 	local env = module.environment;
 	env.connected = false;
+	env.session = false;
 
 	local send;
 
-	local function on_destroy(session, err)
+	local function on_destroy(session, err) --luacheck: ignore 212/err
 		env.connected = false;
+		env.session = false;
 		send = nil;
 		session.on_destroy = nil;
 	end
@@ -73,12 +75,18 @@ function module.add_host(module)
 		end
 		
 		if env.connected then
-			module:log("error", "Second component attempted to connect, denying connection");
-			session:close{ condition = "conflict", text = "Component already connected" };
-			return true;
+			local policy = module:get_option_string("component_conflict_resolve", "kick_new");
+			if policy == "kick_old" then
+				env.session:close{ condition = "conflict", text = "Replaced by a new connection" };
+			else -- kick_new
+				module:log("error", "Second component attempted to connect, denying connection");
+				session:close{ condition = "conflict", text = "Component already connected" };
+				return true;
+			end
 		end
 		
 		env.connected = true;
+		env.session = session;
 		send = session.send;
 		session.on_destroy = on_destroy;
 		session.component_validate_from = module:get_option_boolean("validate_from_addresses", true);
@@ -141,7 +149,7 @@ local stream_callbacks = { default_ns = xmlns_component };
 
 local xmlns_xmpp_streams = "urn:ietf:params:xml:ns:xmpp-streams";
 
-function stream_callbacks.error(session, error, data, data2)
+function stream_callbacks.error(session, error, data)
 	if session.destroyed then return; end
 	module:log("warn", "Error processing component stream: %s", tostring(error));
 	if error == "no-stream" then
@@ -178,9 +186,7 @@ function stream_callbacks.streamopened(session, attr)
 	session.streamid = uuid_gen();
 	session.notopen = nil;
 	-- Return stream header
-	session.send("<?xml version='1.0'?>");
-	session.send(st.stanza("stream:stream", { xmlns=xmlns_component,
-			["xmlns:stream"]='http://etherx.jabber.org/streams', id=session.streamid, from=session.host }):top_tag());
+	session:open_stream();
 end
 
 function stream_callbacks.streamclosed(session)
@@ -289,7 +295,7 @@ function listener.onconnect(conn)
 		session.stream:reset();
 	end
 
-	function session.data(conn, data)
+	function session.data(_, data)
 		local ok, err = stream:feed(data);
 		if ok then return; end
 		module:log("debug", "Received invalid XML (%s) %d bytes: %s", tostring(err), #data, data:sub(1, 300):gsub("[\r\n]+", " "):gsub("[%z\1-\31]", "_"));
@@ -308,6 +314,9 @@ function listener.ondisconnect(conn, err)
 	local session = sessions[conn];
 	if session then
 		(session.log or log)("info", "component disconnected: %s (%s)", tostring(session.host), tostring(err));
+		if session.host then
+			module:context(session.host):fire_event("component-disconnected", { session = session, reason = err });
+		end
 		if session.on_destroy then session:on_destroy(err); end
 		sessions[conn] = nil;
 		for k in pairs(session) do
@@ -316,7 +325,6 @@ function listener.ondisconnect(conn, err)
 			end
 		end
 		session.destroyed = true;
-		session = nil;
 	end
 end
 

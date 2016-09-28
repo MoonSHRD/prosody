@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -21,6 +21,8 @@ local t_insert, t_sort, ipairs = table.insert, table.sort, ipairs;
 local local_addresses = require "util.net".local_addresses;
 
 local s2s_destroy_session = require "core.s2smanager".destroy_session;
+
+local default_mode = module:get_option("network_default_read_size", 4096);
 
 local log = module._log;
 
@@ -46,14 +48,14 @@ end
 function s2sout.initiate_connection(host_session)
 	initialize_filters(host_session);
 	host_session.version = 1;
-	
+
 	-- Kick the connection attempting machine into life
 	if not s2sout.attempt_connection(host_session) then
 		-- Intentionally not returning here, the
 		-- session is needed, connected or not
 		s2s_destroy_session(host_session);
 	end
-	
+
 	if not host_session.sends2s then
 		-- A sends2s which buffers data (until the stream is opened)
 		-- note that data in this buffer will be sent before the stream is authed
@@ -74,22 +76,23 @@ end
 function s2sout.attempt_connection(host_session, err)
 	local to_host = host_session.to_host;
 	local connect_host, connect_port = to_host and idna_to_ascii(to_host), 5269;
-	
+
 	if not connect_host then
 		return false;
 	end
-	
+
 	if not err then -- This is our first attempt
 		log("debug", "First attempt to connect to %s, starting with SRV lookup...", to_host);
 		host_session.connecting = true;
 		local handle;
 		handle = adns.lookup(function (answer)
 			handle = nil;
+			local srv_hosts = { answer = answer };
+			host_session.srv_hosts = srv_hosts;
+			host_session.srv_choice = 0;
 			host_session.connecting = nil;
 			if answer and #answer > 0 then
 				log("debug", "%s has SRV records, handling...", to_host);
-				local srv_hosts = { answer = answer };
-				host_session.srv_hosts = srv_hosts;
 				for _, record in ipairs(answer) do
 					t_insert(srv_hosts, record.srv);
 				end
@@ -99,7 +102,7 @@ function s2sout.attempt_connection(host_session, err)
 					return;
 				end
 				t_sort(srv_hosts, compare_srv_priorities);
-				
+
 				local srv_choice = srv_hosts[1];
 				host_session.srv_choice = 1;
 				if srv_choice then
@@ -118,7 +121,7 @@ function s2sout.attempt_connection(host_session, err)
 				end
 			end
 		end, "_xmpp-server._tcp."..connect_host..".", "SRV");
-		
+
 		return true; -- Attempt in progress
 	elseif host_session.ip_hosts then
 		return s2sout.try_connect(host_session, connect_host, connect_port, err);
@@ -128,11 +131,11 @@ function s2sout.attempt_connection(host_session, err)
 		connect_host, connect_port = srv_choice.target or to_host, srv_choice.port or connect_port;
 		host_session.log("info", "Connection failed (%s). Attempt #%d: This time to %s:%d", tostring(err), host_session.srv_choice, connect_host, connect_port);
 	else
-		host_session.log("info", "Out of connection options, can't connect to %s", tostring(host_session.to_host));
+		host_session.log("info", "Failed in all attempts to connect to %s", tostring(host_session.to_host));
 		-- We're out of options
 		return false;
 	end
-	
+
 	if not (connect_host and connect_port) then
 		-- Likely we couldn't resolve DNS
 		log("warn", "Hmm, we're without a host (%s) and port (%s) to connect to for %s, giving up :(", tostring(connect_host), tostring(connect_port), tostring(to_host));
@@ -252,11 +255,12 @@ function s2sout.try_connect(host_session, connect_host, connect_port, err)
 end
 
 function s2sout.make_connect(host_session, connect_host, connect_port)
-	(host_session.log or log)("info", "Beginning new connection attempt to %s ([%s]:%d)", host_session.to_host, connect_host.addr, connect_port);
+	(host_session.log or log)("debug", "Beginning new connection attempt to %s ([%s]:%d)", host_session.to_host, connect_host.addr, connect_port);
 
 	-- Reset secure flag in case this is another
 	-- connection attempt after a failed STARTTLS
 	host_session.secure = nil;
+	host_session.encrypted = nil;
 
 	local conn, handler;
 	local proto = connect_host.proto;
@@ -267,7 +271,7 @@ function s2sout.make_connect(host_session, connect_host, connect_port)
 	else
 		handler = "Unsupported protocol: "..tostring(proto);
 	end
-	
+
 	if not conn then
 		log("warn", "Failed to create outgoing connection, system error: %s", handler);
 		return false, handler;
@@ -279,29 +283,14 @@ function s2sout.make_connect(host_session, connect_host, connect_port)
 		log("warn", "s2s connect() to %s (%s:%d) failed: %s", host_session.to_host, connect_host.addr, connect_port, err);
 		return false, err;
 	end
-	
-	conn = wrapclient(conn, connect_host.addr, connect_port, s2s_listener, "*a");
+
+	conn = wrapclient(conn, connect_host.addr, connect_port, s2s_listener, default_mode);
 	host_session.conn = conn;
-	
-	local filter = initialize_filters(host_session);
-	local w, log = conn.write, host_session.log;
-	host_session.sends2s = function (t)
-		log("debug", "sending: %s", (t.top_tag and t:top_tag()) or t:match("^[^>]*>?"));
-		if t.name then
-			t = filter("stanzas/out", t);
-		end
-		if t then
-			t = filter("bytes/out", tostring(t));
-			if t then
-				return w(conn, tostring(t));
-			end
-		end
-	end
-	
+
 	-- Register this outgoing connection so that xmppserver_listener knows about it
 	-- otherwise it will assume it is a new incoming connection
 	s2s_listener.register_outgoing(conn, host_session);
-	
+
 	log("debug", "Connection attempt in progress...");
 	return true;
 end

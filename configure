@@ -2,7 +2,7 @@
 
 # Defaults
 
-PREFIX=/usr/local
+PREFIX="/usr/local"
 SYSCONFDIR="$PREFIX/etc/prosody"
 LIBDIR="$PREFIX/lib"
 DATADIR="$PREFIX/var/lib/prosody"
@@ -11,19 +11,20 @@ LUA_DIR="/usr"
 LUA_BINDIR="/usr/bin"
 LUA_INCDIR="/usr/include"
 LUA_LIBDIR="/usr/lib"
-IDN_LIB=idn
+IDN_LIB="idn"
 ICU_FLAGS="-licui18n -licudata -licuuc"
-OPENSSL_LIB=crypto
-CC=gcc
-CXX=g++
-LD=gcc
-RUNWITH=lua
-EXCERTS=yes
+OPENSSL_LIB="crypto"
+CC="gcc"
+LD="gcc"
+RUNWITH="lua"
+EXCERTS="yes"
+PRNG=
+PRNGLIBS=
 
-CFLAGS="-fPIC -Wall"
+CFLAGS="-fPIC -Wall -pedantic -std=c89"
 LDFLAGS="-shared"
 
-IDN_LIBRARY=idn
+IDN_LIBRARY="idn"
 # Help
 
 show_help() {
@@ -31,8 +32,8 @@ cat <<EOF
 Configure Prosody prior to building.
 
 --help                      This help.
---ostype=OS                 Use one of the OS presets.
-                            May be one of: debian, macosx, linux, freebsd
+--ostype=OS                 Use one of the OS presets. May be one of:
+                            debian, macosx, linux, freebsd, openbsd, netbsd
 --prefix=DIR                Prefix where Prosody should be installed.
                             Default is $PREFIX
 --sysconfdir=DIR            Location where the config file should be installed.
@@ -58,6 +59,11 @@ Configure Prosody prior to building.
                             icu: use ICU from IBM
 --with-ssl=LIB              The name of the SSL to link with.
                             Default is $OPENSSL_LIB
+--with-random=METHOD        CSPRNG backend to use. One of
+                            getrandom: Linux kernel
+                            arc4random: OpenBSD kernel
+                            openssl: OpenSSL RAND method
+                            Default is to use /dev/urandom
 --cflags=FLAGS              Flags to pass to the compiler
                             Default is $CFLAGS
 --ldflags=FLAGS             Flags to pass to the linker
@@ -99,51 +105,78 @@ do
    --ostype=*)
       OSTYPE="$value"
       OSTYPE_SET=yes
-      if [ "$OSTYPE" = "debian" ]
-      then LUA_SUFFIX="5.1";
-	LUA_SUFFIX_SET=yes
-	RUNWITH="lua5.1"
-	LUA_INCDIR=/usr/include/lua5.1;
-	LUA_INCDIR_SET=yes
-	CFLAGS="$CFLAGS -D_GNU_SOURCE"
-	fi
-	if [ "$OSTYPE" = "macosx" ]
-	then LUA_INCDIR=/usr/local/include;
-	LUA_INCDIR_SET=yes
-	LUA_LIBDIR=/usr/local/lib
-	LUA_LIBDIR_SET=yes
-	LDFLAGS="-bundle -undefined dynamic_lookup"
-	fi
-        if [ "$OSTYPE" = "linux" ]
-        then LUA_INCDIR=/usr/local/include;
-        LUA_INCDIR_SET=yes
-        LUA_LIBDIR=/usr/local/lib
-        LUA_LIBDIR_SET=yes
-        CFLAGS="-Wall -fPIC"
-        CFLAGS="$CFLAGS -D_GNU_SOURCE"
-        LDFLAGS="-shared"
-        fi
-        if [ "$OSTYPE" = "freebsd" -o "$OSTYPE" = "openbsd" ]
-        then LUA_INCDIR="/usr/local/include/lua51"
-        LUA_INCDIR_SET=yes
-        CFLAGS="-Wall -fPIC -I/usr/local/include"
-        LDFLAGS="-I/usr/local/include -L/usr/local/lib -shared"
-        LUA_SUFFIX="-5.1"
-        LUA_SUFFIX_SET=yes
-        LUA_DIR=/usr/local
-        LUA_DIR_SET=yes
-        fi
-        if [ "$OSTYPE" = "openbsd" ]
-        then LUA_INCDIR="/usr/local/include";
-        fi
+      if [ "$OSTYPE" = "debian" ]; then
+         if [ "$LUA_SUFFIX_SET" != "yes" ]; then
+            LUA_SUFFIX="5.1";
+            LUA_SUFFIX_SET=yes
+         fi
+         RUNWITH="lua$LUA_SUFFIX"
+         LUA_INCDIR="/usr/include/lua$LUA_SUFFIX"
+         LUA_INCDIR_SET=yes
+         CFLAGS="$CFLAGS -ggdb -D_GNU_SOURCE"
+      fi
+      if [ "$OSTYPE" = "macosx" ]; then
+         LUA_INCDIR=/usr/local/include;
+         LUA_INCDIR_SET=yes
+         LUA_LIBDIR=/usr/local/lib
+         LUA_LIBDIR_SET=yes
+         CFLAGS="$CFLAGS -mmacosx-version-min=10.3"
+         LDFLAGS="-bundle -undefined dynamic_lookup"
+      fi
+      if [ "$OSTYPE" = "linux" ]; then
+         LUA_INCDIR=/usr/local/include;
+         LUA_INCDIR_SET=yes
+         LUA_LIBDIR=/usr/local/lib
+         LUA_LIBDIR_SET=yes
+         CFLAGS="$CFLAGS -ggdb -D_GNU_SOURCE"
+      fi
+      if [ "$OSTYPE" = "freebsd" -o "$OSTYPE" = "openbsd" ]; then
+         LUA_INCDIR="/usr/local/include/lua51"
+         LUA_INCDIR_SET=yes
+         CFLAGS="-Wall -fPIC -I/usr/local/include"
+         LDFLAGS="-I/usr/local/include -L/usr/local/lib -shared"
+         LUA_SUFFIX="-5.1"
+         LUA_SUFFIX_SET=yes
+         LUA_DIR=/usr/local
+         LUA_DIR_SET=yes
+         CC=cc
+         LD=ld
+      fi
+      if [ "$OSTYPE" = "openbsd" ]; then
+         LUA_INCDIR="/usr/local/include";
+         LUA_INCDIR_SET="yes"
+      fi
+      if [ "$OSTYPE" = "netbsd" ]; then
+         RUNWITH="lua5.1"
+         LUA_INCDIR="/usr/pkg/include/lua-5.1"
+         LUA_INCDIR_SET=yes
+         LUA_LIBDIR="/usr/pkg/lib/lua/5.1"
+         LUA_LIBDIR_SET=yes
+         CFLAGS="-Wall -fPIC -I/usr/pkg/include"
+         LDFLAGS="-L/usr/pkg/lib -Wl,-rpath,/usr/pkg/lib -shared"
+      fi
+      if [ "$OSTYPE" = "pkg-config" ]; then
+         if [ "$LUA_SUFFIX_SET" != "yes" ]; then
+            LUA_SUFFIX="5.1";
+            LUA_SUFFIX_SET=yes
+         fi
+         LUA_CF="$(pkg-config --cflags-only-I lua$LUA_SUFFIX)"
+         LUA_CF="${LUA_CF#*-I}"
+         LUA_CF="${LUA_CF%% *}"
+         if [ "$LUA_CF" != "" ]; then
+            LUA_INCDIR="$LUA_CF"
+            LUA_INCDIR_SET=yes
+         fi
+         CFLAGS="$CFLAGS -D_GNU_SOURCE"
+      fi
       ;;
    --libdir=*)
       LIBDIR="$value"
       LIBDIR_SET=yes
       ;;
    --datadir=*)
-   	DATADIR="$value"
-   	DATADIR_SET=yes
+      DATADIR="$value"
+      DATADIR_SET=yes
       ;;
    --require-config)
       REQUIRE_CONFIG=yes
@@ -166,11 +199,21 @@ do
    --with-idn=*)
       IDN_LIB="$value"
       ;;
-	--idn-library=*)
-		IDN_LIBRARY="$value"
-		;;
+   --idn-library=*)
+      IDN_LIBRARY="$value"
+      ;;
    --with-ssl=*)
       OPENSSL_LIB="$value"
+      ;;
+  --with-random=getrandom)
+      PRNG=GETRANDOM
+      ;;
+  --with-random=openssl)
+      PRNG=OPENSSL
+      PRNGLIBS=-lcrypto
+      ;;
+  --with-random=arc4random)
+      PRNG=ARC4RANDOM
       ;;
    --cflags=*)
       CFLAGS="$value"
@@ -189,6 +232,10 @@ do
       ;;
     --no-example-certs)
       EXCERTS=
+      ;;
+   --compiler-wrapper=*)
+      CC="$value $CC"
+      LD="$value $LD"
       ;;
    *)
       echo "Error: Unknown flag: $1"
@@ -226,7 +273,7 @@ find_program() {
    found="no"
    while [ "$item" ]
    do
-      if [ -e "$item/$1" ]
+      if [ -f "$item/$1" ]
       then
          found="yes"
          break
@@ -249,7 +296,7 @@ then
       LUA_SUFFIX="$suffix"
       if [ "$LUA_DIR_SET" = "yes" ]
       then
-         if [ -e "$LUA_DIR/bin/lua$suffix" ]
+         if [ -f "$LUA_DIR/bin/lua$suffix" ]
          then
             find_lua="$LUA_DIR"
          fi
@@ -264,7 +311,7 @@ then
    done
 fi
 
-if ! [ "$LUA_DIR_SET" = "yes" ]
+if [ "$LUA_DIR_SET" != "yes" ]
 then
    echo -n "Looking for Lua... "
    if [ ! "$find_lua" ]
@@ -283,12 +330,12 @@ then
    fi
 fi
 
-if ! [ "$LUA_INCDIR_SET" = "yes" ]
+if [ "$LUA_INCDIR_SET" != "yes" ]
 then
    LUA_INCDIR="$LUA_DIR/include"
 fi
 
-if ! [ "$LUA_LIBDIR_SET" = "yes" ]
+if [ "$LUA_LIBDIR_SET" != "yes" ]
 then
    LUA_LIBDIR="$LUA_DIR/lib"
 fi
@@ -300,17 +347,19 @@ fi
 
 if [ "$IDN_LIBRARY" = "icu" ]
 then
-	IDNA_LIBS="$ICU_FLAGS"
-	CFLAGS="$CFLAGS -DUSE_STRINGPREP_ICU"
+   IDNA_LIBS="$ICU_FLAGS"
+   CFLAGS="$CFLAGS -DUSE_STRINGPREP_ICU"
 fi
-if [ "$IDN_LIBRARY" = "idn" ] 
+if [ "$IDN_LIBRARY" = "idn" ]
 then
-	IDNA_LIBS="-l$IDN_LIB"
+   IDNA_LIBS="-l$IDN_LIB"
 fi
+
+OPENSSL_LIBS="-l$OPENSSL_LIB"
 
 echo -n "Checking Lua includes... "
 lua_h="$LUA_INCDIR/lua.h"
-if [ -e "$lua_h" ]
+if [ -f "$lua_h" ]
 then
    echo "lua.h found in $lua_h"
 else
@@ -318,26 +367,6 @@ else
    echo "You may want to use the flag --with-lua-include. See --help."
    exit 1
 fi
-
-find_helper() {
-   explanation="$1"
-   shift
-   tried="$*"
-   while [ "$1" ]
-   do
-      found=`find_program "$1"`
-      if [ "$found" ]
-      then
-         echo "$1 found at $found"
-         HELPER=$1
-         return
-      fi
-      shift
-   done
-   echo "Could not find a $explanation. Tried: $tried."
-   echo "Make sure one of them is installed and available in your PATH."
-   exit 1
-}
 
 # Write config
 
@@ -360,14 +389,16 @@ LUA_BINDIR=$LUA_BINDIR
 REQUIRE_CONFIG=$REQUIRE_CONFIG
 IDN_LIB=$IDN_LIB
 IDNA_LIBS=$IDNA_LIBS
-OPENSSL_LIB=$OPENSSL_LIB
+OPENSSL_LIBS=$OPENSSL_LIBS
 CFLAGS=$CFLAGS
 LDFLAGS=$LDFLAGS
 CC=$CC
-CXX=$CXX
 LD=$LD
 RUNWITH=$RUNWITH
 EXCERTS=$EXCERTS
+RANDOM=$PRNG
+RANDOM_LIBS=$PRNGLIBS
+
 
 EOF
 

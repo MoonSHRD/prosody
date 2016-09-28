@@ -1,14 +1,14 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
 
 
 function new(new, multitable)
-	mt = new();
+	local mt = new();
 	assert_table(mt, "Multitable is a table");
 	assert_function(mt.add, "Multitable has method add");
 	assert_function(mt.get, "Multitable has method get");
@@ -27,7 +27,7 @@ function get(get, multitable)
 			return true, "has-all";
 		end
 		for n=1,select('#', ...) do should_have[select(n, ...)] = true; end
-		for n, item in ipairs(list) do
+		for _, item in ipairs(list) do
 			if not should_have[item] then return false, "too-many"; end
 			should_have[item] = nil;
 		end
@@ -40,8 +40,8 @@ function get(get, multitable)
 		return assert_equal(select(2, has_items(list, ...)), "has-all", message or "List has all expected items, and no more", 2);
 	end
 
-	mt = multitable.new();
-	
+	local mt = multitable.new();
+
 	local trigger1, trigger2, trigger3 = {}, {}, {};
 	local item1, item2, item3 = {}, {}, {};
 
@@ -51,12 +51,12 @@ function get(get, multitable)
 	mt:add(1, 2, 3, item1);
 
 	assert_has_all("Has item1 for 1, 2, 3", mt:get(1, 2, 3), item1);
-	
+
 -- Doesn't support nil
 --[[	mt:add(nil, item1);
 	mt:add(nil, item2);
 	mt:add(nil, item3);
-	
+
 	assert_has_all("Has all items with (nil)", mt:get(nil), item1, item2, item3);
 ]]
 end
