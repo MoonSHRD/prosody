@@ -12,8 +12,6 @@ local events_new = require "util.events".new;
 local disco_items = require "util.multitable".new();
 local NULL = {};
 
-local jid_split = require "util.jid".split;
-
 local log = require "util.logger".init("hostmanager");
 
 local hosts = prosody.hosts;
@@ -24,7 +22,7 @@ end
 local incoming_s2s = _G.prosody.incoming_s2s;
 local core_route_stanza = _G.prosody.core_route_stanza;
 
-local pairs, select, rawget = pairs, select, rawget;
+local pairs, rawget = pairs, rawget;
 local tostring, type = tostring, type;
 local setmetatable = setmetatable;
 
@@ -71,13 +69,6 @@ end
 prosody_events.add_handler("server-starting", load_enabled_hosts);
 
 local function host_send(stanza)
-	local name, stanza_type = stanza.name, stanza.attr.type;
-	if stanza_type == "error" or (name == "iq" and stanza_type == "result") then
-		local dest_host_name = select(2, jid_split(stanza.attr.to));
-		local dest_host = hosts[dest_host_name] or { type = "unknown" };
-		log("warn", "Unhandled response sent to %s host %s: %s", dest_host.type, dest_host_name, tostring(stanza));
-		return;
-	end
 	core_route_stanza(nil, stanza);
 end
 
