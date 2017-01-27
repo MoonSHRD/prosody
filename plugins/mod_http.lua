@@ -50,6 +50,9 @@ end
 
 local function redir_handler(event)
 	event.response.headers.location = event.request.path.."/";
+	if event.request.url.query then
+		event.response.headers.location = event.response.headers.location .. "?" .. event.request.url.query
+	end
 	return 301;
 end
 
@@ -120,7 +123,7 @@ function module.add_host(module)
 					module:log("warn", "App %s added handler twice for '%s', ignoring", app_name, event_name);
 				end
 			else
-				module:log("error", "Invalid route in %s, %q. See http://prosody.im/doc/developers/http#routes", app_name, key);
+				module:log("error", "Invalid route in %s, %q. See https://prosody.im/doc/developers/http#routes", app_name, key);
 			end
 		end
 		local services = portmanager.get_active_services();

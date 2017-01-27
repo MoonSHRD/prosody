@@ -1,3 +1,17 @@
+trunk
+=====
+
+**YYYY-MM-DD**
+
+New features
+------------
+
+-   Rewritten more extensible MUC module
+    -   Store inactive rooms to disk
+    -   Store rooms to disk on shutdown
+-   mod\_pep\_plus
+-   Asynchronous operations
+
 0.10.not-released-yet
 =====================
 
