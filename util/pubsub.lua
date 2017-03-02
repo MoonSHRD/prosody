@@ -1,23 +1,28 @@
 local events = require "util.events";
-
-module("pubsub", package.seeall);
+local cache = require "util.cache";
 
 local service = {};
 local service_mt = { __index = service };
 
-local default_config = {
+local default_config = { __index = {
+	itemstore = function (config) return cache.new(tonumber(config["pubsub#max_items"])) end;
 	broadcaster = function () end;
 	get_affiliation = function () end;
 	capabilities = {};
-};
+} };
+local default_node_config = { __index = {
+	["pubsub#max_items"] = "20";
+} };
 
-function new(config)
+local function new(config)
 	config = config or {};
 	return setmetatable({
-		config = setmetatable(config, { __index = default_config });
+		config = setmetatable(config, default_config);
+		node_defaults = setmetatable(config.node_defaults or {}, default_node_config);
 		affiliations = {};
 		subscriptions = {};
 		nodes = {};
+		data = {};
 		events = events.new();
 	}, service_mt);
 end
@@ -29,13 +34,13 @@ end
 
 function service:may(node, actor, action)
 	if actor == true then return true; end
-	
+
 	local node_obj = self.nodes[node];
 	local node_aff = node_obj and node_obj.affiliations[actor];
 	local service_aff = self.affiliations[actor]
 	                 or self.config.get_affiliation(actor, node, action)
 	                 or "none";
-	
+
 	-- Check if node allows/forbids it
 	local node_capabilities = node_obj and node_obj.capabilities;
 	if node_capabilities then
@@ -47,7 +52,7 @@ function service:may(node, actor, action)
 			end
 		end
 	end
-	
+
 	-- Check service-wide capabilities instead
 	local service_capabilities = self.config.capabilities;
 	local caps = service_capabilities[node_aff or service_aff];
@@ -57,7 +62,7 @@ function service:may(node, actor, action)
 			return can;
 		end
 	end
-	
+
 	return false;
 end
 
@@ -202,7 +207,7 @@ function service:get_subscription(node, actor, jid)
 	return true, node_obj.subscribers[jid];
 end
 
-function service:create(node, actor)
+function service:create(node, actor, options)
 	-- Access checking
 	if not self:may(node, actor, "create") then
 		return false, "forbidden";
@@ -211,17 +216,19 @@ function service:create(node, actor)
 	if self.nodes[node] then
 		return false, "conflict";
 	end
-	
+
 	self.nodes[node] = {
 		name = node;
 		subscribers = {};
-		config = {};
-		data = {};
+		config = setmetatable(options or {}, {__index=self.node_defaults});
 		affiliations = {};
 	};
+	self.data[node] = self.config.itemstore(self.nodes[node].config);
+	self.events.fire_event("node-created", { node = node, actor = actor });
 	local ok, err = self:set_affiliation(node, true, actor, "owner");
 	if not ok then
 		self.nodes[node] = nil;
+		self.data[node] = nil;
 	end
 	return ok, err;
 end
@@ -237,6 +244,8 @@ function service:delete(node, actor)
 		return false, "item-not-found";
 	end
 	self.nodes[node] = nil;
+	self.data[node] = nil;
+	self.events.fire_event("node-deleted", { node = node, actor = actor });
 	self.config.broadcaster("delete", node, node_obj.subscribers);
 	return true;
 end
@@ -258,9 +267,13 @@ function service:publish(node, actor, id, item)
 		end
 		node_obj = self.nodes[node];
 	end
-	node_obj.data[id] = item;
+	local node_data = self.data[node];
+	local ok = node_data:set(id, item);
+	if not ok then
+		return nil, "internal-server-error";
+	end
 	self.events.fire_event("item-published", { node = node, actor = actor, id = id, item = item });
-	self.config.broadcaster("items", node, node_obj.subscribers, item);
+	self.config.broadcaster("items", node, node_obj.subscribers, item, actor);
 	return true;
 end
 
@@ -271,10 +284,14 @@ function service:retract(node, actor, id, retract)
 	end
 	--
 	local node_obj = self.nodes[node];
-	if (not node_obj) or (not node_obj.data[id]) then
+	if (not node_obj) or (not self.data[node]:get(id)) then
 		return false, "item-not-found";
 	end
-	node_obj.data[id] = nil;
+	local ok = self.data[node]:set(id, nil);
+	if not ok then
+		return nil, "internal-server-error";
+	end
+	self.events.fire_event("item-retracted", { node = node, actor = actor, id = id });
 	if retract then
 		self.config.broadcaster("items", node, node_obj.subscribers, retract);
 	end
@@ -291,7 +308,8 @@ function service:purge(node, actor, notify)
 	if not node_obj then
 		return false, "item-not-found";
 	end
-	node_obj.data = {}; -- Purge
+	self.data[node] = self.config.itemstore(self.nodes[node].config);
+	self.events.fire_event("node-purged", { node = node, actor = actor });
 	if notify then
 		self.config.broadcaster("purge", node, node_obj.subscribers);
 	end
@@ -309,9 +327,14 @@ function service:get_items(node, actor, id)
 		return false, "item-not-found";
 	end
 	if id then -- Restrict results to a single specific item
-		return true, { [id] = node_obj.data[id] };
+		return true, { id, [id] = self.data[node]:get(id) };
 	else
-		return true, node_obj.data;
+		local data = {}
+		for key, value in self.data[node]:items() do
+			data[#data+1] = key;
+			data[key] = value;
+		end
+		return true, data;
 	end
 end
 
@@ -349,13 +372,13 @@ function service:get_subscriptions(node, actor, jid)
 	-- a get_subscription() call for each node.
 	local ret = {};
 	if subs then
-		for jid, subscribed_nodes in pairs(subs) do
+		for subscribed_jid, subscribed_nodes in pairs(subs) do
 			if node then -- Return only subscriptions to this node
 				if subscribed_nodes[node] then
 					ret[#ret+1] = {
 						node = node;
-						jid = jid;
-						subscription = node_obj.subscribers[jid];
+						jid = subscribed_jid;
+						subscription = node_obj.subscribers[subscribed_jid];
 					};
 				end
 			else -- Return subscriptions to all nodes
@@ -363,8 +386,8 @@ function service:get_subscriptions(node, actor, jid)
 				for subscribed_node in pairs(subscribed_nodes) do
 					ret[#ret+1] = {
 						node = subscribed_node;
-						jid = jid;
-						subscription = nodes[subscribed_node].subscribers[jid];
+						jid = subscribed_jid;
+						subscription = nodes[subscribed_node].subscribers[subscribed_jid];
 					};
 				end
 			end
@@ -388,4 +411,27 @@ function service:set_node_capabilities(node, actor, capabilities)
 	return true;
 end
 
-return _M;
+function service:set_node_config(node, actor, new_config)
+	if not self:may(node, actor, "configure") then
+		return false, "forbidden";
+	end
+
+	local node_obj = self.nodes[node];
+	if not node_obj then
+		return false, "item-not-found";
+	end
+
+	for k,v in pairs(new_config) do
+		node_obj.config[k] = v;
+	end
+	local new_data = self.config.itemstore(self.nodes[node].config);
+	for key, value in self.data[node]:items() do
+		new_data:set(key, value);
+	end
+	self.data[node] = new_data;
+	return true;
+end
+
+return {
+	new = new;
+};

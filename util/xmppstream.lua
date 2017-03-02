@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -24,7 +24,7 @@ local lxp_supports_bytecount = not not lxp.new({}).getcurrentbytecount;
 
 local default_stanza_size_limit = 1024*1024*10; -- 10MB
 
-module "xmppstream"
+local _ENV = nil;
 
 local new_parser = lxp.new;
 
@@ -40,29 +40,26 @@ local xmlns_streams = "http://etherx.jabber.org/streams";
 local ns_separator = "\1";
 local ns_pattern = "^([^"..ns_separator.."]*)"..ns_separator.."?(.*)$";
 
-_M.ns_separator = ns_separator;
-_M.ns_pattern = ns_pattern;
-
 local function dummy_cb() end
 
-function new_sax_handlers(session, stream_callbacks, cb_handleprogress)
+local function new_sax_handlers(session, stream_callbacks, cb_handleprogress)
 	local xml_handlers = {};
-	
+
 	local cb_streamopened = stream_callbacks.streamopened;
 	local cb_streamclosed = stream_callbacks.streamclosed;
 	local cb_error = stream_callbacks.error or function(session, e, stanza) error("XML stream error: "..tostring(e)..(stanza and ": "..tostring(stanza) or ""),2); end;
 	local cb_handlestanza = stream_callbacks.handlestanza;
 	cb_handleprogress = cb_handleprogress or dummy_cb;
-	
+
 	local stream_ns = stream_callbacks.stream_ns or xmlns_streams;
 	local stream_tag = stream_callbacks.stream_tag or "stream";
 	if stream_ns ~= "" then
 		stream_tag = stream_ns..ns_separator..stream_tag;
 	end
 	local stream_error_tag = stream_ns..ns_separator..(stream_callbacks.error_tag or "error");
-	
+
 	local stream_default_ns = stream_callbacks.default_ns;
-	
+
 	local stack = {};
 	local chardata, stanza = {};
 	local stanza_size = 0;
@@ -82,7 +79,7 @@ function new_sax_handlers(session, stream_callbacks, cb_handleprogress)
 			attr.xmlns = curr_ns;
 			non_streamns_depth = non_streamns_depth + 1;
 		end
-		
+
 		for i=1,#attr do
 			local k = attr[i];
 			attr[i] = nil;
@@ -92,7 +89,7 @@ function new_sax_handlers(session, stream_callbacks, cb_handleprogress)
 				attr[k] = nil;
 			end
 		end
-		
+
 		if not stanza then --if we are not currently inside a stanza
 			if lxp_supports_bytecount then
 				stanza_size = self:getcurrentbytecount();
@@ -116,7 +113,7 @@ function new_sax_handlers(session, stream_callbacks, cb_handleprogress)
 			if curr_ns == "jabber:client" and name ~= "iq" and name ~= "presence" and name ~= "message" then
 				cb_error(session, "invalid-top-level-element");
 			end
-			
+
 			stanza = setmetatable({ name = name, attr = attr, tags = {} }, stanza_mt);
 		else -- we are inside a stanza, so add a tag
 			if lxp_supports_bytecount then
@@ -205,26 +202,26 @@ function new_sax_handlers(session, stream_callbacks, cb_handleprogress)
 			error("Failed to abort parsing");
 		end
 	end
-	
+
 	if lxp_supports_doctype then
 		xml_handlers.StartDoctypeDecl = restricted_handler;
 	end
 	xml_handlers.Comment = restricted_handler;
 	xml_handlers.ProcessingInstruction = restricted_handler;
-	
+
 	local function reset()
 		stanza, chardata, stanza_size = nil, {}, 0;
 		stack = {};
 	end
-	
+
 	local function set_session(stream, new_session)
 		session = new_session;
 	end
-	
+
 	return xml_handlers, { reset = reset, set_session = set_session };
 end
 
-function new(session, stream_callbacks, stanza_size_limit)
+local function new(session, stream_callbacks, stanza_size_limit)
 	-- Used to track parser progress (e.g. to enforce size limits)
 	local n_outstanding_bytes = 0;
 	local handle_progress;
@@ -240,6 +237,25 @@ function new(session, stream_callbacks, stanza_size_limit)
 	local handlers, meta = new_sax_handlers(session, stream_callbacks, handle_progress);
 	local parser = new_parser(handlers, ns_separator, false);
 	local parse = parser.parse;
+
+	function session.open_stream(session, from, to)
+		local send = session.sends2s or session.send;
+
+		local attr = {
+			["xmlns:stream"] = "http://etherx.jabber.org/streams",
+			["xml:lang"] = "en",
+			xmlns = stream_callbacks.default_ns,
+			version = session.version and (session.version > 0 and "1.0" or nil),
+			id = session.streamid,
+			from = from or session.host, to = to,
+		};
+		if session.stream_attrs then
+			session:stream_attrs(from, to, attr)
+		end
+		send("<?xml version='1.0'?>");
+		send(st.stanza("stream:stream", attr):top_tag());
+		return true;
+	end
 
 	return {
 		reset = function ()
@@ -262,4 +278,9 @@ function new(session, stream_callbacks, stanza_size_limit)
 	};
 end
 
-return _M;
+return {
+	ns_separator = ns_separator;
+	ns_pattern = ns_pattern;
+	new_sax_handlers = new_sax_handlers;
+	new = new;
+};

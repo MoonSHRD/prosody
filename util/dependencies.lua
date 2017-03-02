@@ -1,21 +1,19 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
 
-module("dependencies", package.seeall)
-
-function softreq(...) local ok, lib =  pcall(require, ...); if ok then return lib; else return nil, lib; end end
+local function softreq(...) local ok, lib =  pcall(require, ...); if ok then return lib; else return nil, lib; end end
 
 -- Required to be able to find packages installed with luarocks
 if not softreq "luarocks.loader" then -- LuaRocks 2.x
 	softreq "luarocks.require"; -- LuaRocks <1.x
 end
 
-function missingdep(name, sources, msg)
+local function missingdep(name, sources, msg)
 	print("");
 	print("**************************");
 	print("Prosody was unable to find "..tostring(name));
@@ -35,7 +33,7 @@ function missingdep(name, sources, msg)
 	print("");
 end
 
--- COMPAT w/pre-0.8 Debian: The Debian config file used to use 
+-- COMPAT w/pre-0.8 Debian: The Debian config file used to use
 -- util.ztact, which has been removed from Prosody in 0.8. This
 -- is to log an error for people who still use it, so they can
 -- update their configs.
@@ -48,69 +46,76 @@ package.preload["util.ztact"] = function ()
 	end
 end;
 
-function check_dependencies()
-	if _VERSION ~= "Lua 5.1" then
+local function check_dependencies()
+	if _VERSION < "Lua 5.1" then
 		print "***********************************"
 		print("Unsupported Lua version: ".._VERSION);
-		print("Only Lua 5.1 is supported.");
+		print("At least Lua 5.1 is required.");
 		print "***********************************"
 		return false;
 	end
 
 	local fatal;
-	
+
 	local lxp = softreq "lxp"
-	
+
 	if not lxp then
 		missingdep("luaexpat", {
-				["Debian/Ubuntu"] = "sudo apt-get install liblua5.1-expat0";
+				["Debian/Ubuntu"] = "sudo apt-get install lua-expat";
 				["luarocks"] = "luarocks install luaexpat";
-				["Source"] = "http://www.keplerproject.org/luaexpat/";
+				["Source"] = "http://matthewwild.co.uk/projects/luaexpat/";
 			});
 		fatal = true;
 	end
-	
+
 	local socket = softreq "socket"
-	
+
 	if not socket then
 		missingdep("luasocket", {
-				["Debian/Ubuntu"] = "sudo apt-get install liblua5.1-socket2";
+				["Debian/Ubuntu"] = "sudo apt-get install lua-socket";
 				["luarocks"] = "luarocks install luasocket";
 				["Source"] = "http://www.tecgraf.puc-rio.br/~diego/professional/luasocket/";
 			});
 		fatal = true;
 	end
-	
+
 	local lfs, err = softreq "lfs"
 	if not lfs then
 		missingdep("luafilesystem", {
-				["luarocks"] = "luarocks install luafilesystem";
-		 		["Debian/Ubuntu"] = "sudo apt-get install liblua5.1-filesystem0";
-		 		["Source"] = "http://www.keplerproject.org/luafilesystem/";
-		 	});
+			["luarocks"] = "luarocks install luafilesystem";
+			["Debian/Ubuntu"] = "sudo apt-get install lua-filesystem";
+			["Source"] = "http://www.keplerproject.org/luafilesystem/";
+		});
 		fatal = true;
 	end
-	
+
 	local ssl = softreq "ssl"
-	
+
 	if not ssl then
 		missingdep("LuaSec", {
 				["Debian/Ubuntu"] = "http://prosody.im/download/start#debian_and_ubuntu";
 				["luarocks"] = "luarocks install luasec";
-				["Source"] = "http://www.inf.puc-rio.br/~brunoos/luasec/";
+				["Source"] = "https://github.com/brunoos/luasec";
 			}, "SSL/TLS support will not be available");
-	elseif not _G.ssl then
-		_G.ssl = ssl;
-		_G.ssl.context = require "ssl.context";
-		_G.ssl.x509 = softreq "ssl.x509";
 	end
-	
+
+	local bit = _G.bit32 or softreq"bit";
+
+	if not bit then
+		missingdep("lua-bitops", {
+			["Debian/Ubuntu"] = "sudo apt-get install lua-bitop";
+			["luarocks"] = "luarocks install luabitop";
+			["Source"] = "http://bitop.luajit.org/";
+		}, "WebSocket support will not be available");
+	end
+
 	local encodings, err = softreq "util.encodings"
 	if not encodings then
-		if err:match("not found") then
-			missingdep("util.encodings", { ["Windows"] = "Make sure you have encodings.dll from the Prosody distribution in util/";
-		 				["GNU/Linux"] = "Run './configure' and 'make' in the Prosody source directory to build util/encodings.so";
-		 			});
+		if err:match("module '[^']*' not found") then
+			missingdep("util.encodings", {
+				["Windows"] = "Make sure you have encodings.dll from the Prosody distribution in util/";
+				["GNU/Linux"] = "Run './configure' and 'make' in the Prosody source directory to build util/encodings.so";
+			});
 		else
 			print "***********************************"
 			print("util/encodings couldn't be loaded. Check that you have a recent version of libidn");
@@ -124,11 +129,12 @@ function check_dependencies()
 
 	local hashes, err = softreq "util.hashes"
 	if not hashes then
-		if err:match("not found") then
-			missingdep("util.hashes", { ["Windows"] = "Make sure you have hashes.dll from the Prosody distribution in util/";
-		 				["GNU/Linux"] = "Run './configure' and 'make' in the Prosody source directory to build util/hashes.so";
-		 			});
-	 	else
+		if err:match("module '[^']*' not found") then
+			missingdep("util.hashes", {
+				["Windows"] = "Make sure you have hashes.dll from the Prosody distribution in util/";
+				["GNU/Linux"] = "Run './configure' and 'make' in the Prosody source directory to build util/hashes.so";
+			});
+		else
 			print "***********************************"
 			print("util/hashes couldn't be loaded. Check that you have a recent version of OpenSSL (libcrypto in particular)");
 			print ""
@@ -138,25 +144,31 @@ function check_dependencies()
 		end
 		fatal = true;
 	end
+
 	return not fatal;
 end
 
-function log_warnings()
+local function log_warnings()
+	if _VERSION > "Lua 5.2" then
+		prosody.log("warn", "Support for %s is experimental, please report any issues", _VERSION);
+	end
+	local ssl = softreq"ssl";
 	if ssl then
 		local major, minor, veryminor, patched = ssl._VERSION:match("(%d+)%.(%d+)%.?(%d*)(M?)");
 		if not major or ((tonumber(major) == 0 and (tonumber(minor) or 0) <= 3 and (tonumber(veryminor) or 0) <= 2) and patched ~= "M") then
-			log("error", "This version of LuaSec contains a known bug that causes disconnects, see http://prosody.im/doc/depends");
+			prosody.log("error", "This version of LuaSec contains a known bug that causes disconnects, see http://prosody.im/doc/depends");
 		end
 	end
+	local lxp = softreq"lxp";
 	if lxp then
 		if not pcall(lxp.new, { StartDoctypeDecl = false }) then
-			log("error", "The version of LuaExpat on your system leaves Prosody "
+			prosody.log("error", "The version of LuaExpat on your system leaves Prosody "
 				.."vulnerable to denial-of-service attacks. You should upgrade to "
 				.."LuaExpat 1.3.0 or higher as soon as possible. See "
 				.."http://prosody.im/doc/depends#luaexpat for more information.");
 		end
 		if not lxp.new({}).getcurrentbytecount then
-			log("error", "The version of LuaExpat on your system does not support "
+			prosody.log("error", "The version of LuaExpat on your system does not support "
 				.."stanza size limits, which may leave servers on untrusted "
 				.."networks (e.g. the internet) vulnerable to denial-of-service "
 				.."attacks. You should upgrade to LuaExpat 1.3.0 or higher as "
@@ -166,4 +178,9 @@ function log_warnings()
 	end
 end
 
-return _M;
+return {
+	softreq = softreq;
+	missingdep = missingdep;
+	check_dependencies = check_dependencies;
+	log_warnings = log_warnings;
+};

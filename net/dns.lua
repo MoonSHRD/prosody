@@ -22,8 +22,8 @@ local is_windows = (_ and windows) or os.getenv("WINDIR");
 local coroutine, io, math, string, table =
       coroutine, io, math, string, table;
 
-local ipairs, next, pairs, print, setmetatable, tostring, assert, error, unpack, select, type=
-      ipairs, next, pairs, print, setmetatable, tostring, assert, error, unpack, select, type;
+local ipairs, next, pairs, print, setmetatable, tostring, assert, error, select, type =
+      ipairs, next, pairs, print, setmetatable, tostring, assert, error, select, type;
 
 local ztact = { -- public domain 20080404 lua@ztact.com
 	get = function(parent, ...)
@@ -71,8 +71,8 @@ local get, set = ztact.get, ztact.set;
 local default_timeout = 15;
 
 -------------------------------------------------- module dns
-module('dns')
-local dns = _M;
+local _ENV = nil;
+local dns = {};
 
 
 -- dns type & class codes ------------------------------ dns type & class codes
@@ -190,7 +190,7 @@ end
 local rrs_metatable = {};    -- - - - - - - - - - - - - - - - - -  rrs_metatable
 function rrs_metatable.__tostring(rrs)
 	local t = {};
-	for i,rr in ipairs(rrs) do
+	for _, rr in ipairs(rrs) do
 		append(t, tostring(rr)..'\n');
 	end
 	return table.concat(t);
@@ -210,15 +210,6 @@ function cache_metatable.__tostring(cache)
 		end
 	end
 	return table.concat(t);
-end
-
-
-function resolver:new()    -- - - - - - - - - - - - - - - - - - - - - resolver
-	local r = { active = {}, cache = {}, unsorted = {} };
-	setmetatable(r, resolver);
-	setmetatable(r.cache, cache_metatable);
-	setmetatable(r.unsorted, { __mode = 'kv' });
-	return r;
 end
 
 
@@ -395,7 +386,7 @@ end
 
 function resolver:AAAA(rr)
 	local addr = {};
-	for i = 1, rr.rdlength, 2 do
+	for _ = 1, rr.rdlength, 2 do
 		local b1, b2 = self:byte(2);
 		table.insert(addr, ("%02x%02x"):format(b1, b2));
 	end
@@ -532,7 +523,7 @@ end
 
 function resolver:rrs (count)    -- - - - - - - - - - - - - - - - - - - - - rrs
 	local rrs = {};
-	for i = 1,count do append(rrs, self:rr()); end
+	for _ = 1, count do append(rrs, self:rr()); end
 	return rrs;
 end
 
@@ -545,7 +536,7 @@ function resolver:decode(packet, force)    -- - - - - - - - - - - - - - decode
 
 	response.question = {};
 	local offset = self.offset;
-	for i = 1,response.header.qdcount do
+	for _ = 1, response.header.qdcount do
 		append(response.question, self:question());
 	end
 	response.question.raw = string.sub(self.packet, offset, self.offset - 1);
@@ -629,7 +620,7 @@ function resolver:getsocket(servernum)    -- - - - - - - - - - - - - getsocket
 	if peer:find(":") then
 		sock, err = socket.udp6();
 	else
-		sock, err = socket.udp();
+		sock, err = (socket.udp4 or socket.udp)();
 	end
 	if sock and self.socket_wrapper then sock, err = self.socket_wrapper(sock, self); end
 	if not sock then
@@ -850,7 +841,7 @@ function resolver:receive(rset)    -- - - - - - - - - - - - - - - - -  receive
 	rset = rset or self.socket;
 
 	local response;
-	for i,sock in pairs(rset) do
+	for _, sock in pairs(rset) do
 
 		if self.socketset[sock] then
 			local packet = sock:receive();
@@ -861,7 +852,7 @@ function resolver:receive(rset)    -- - - - - - - - - - - - - - - - -  receive
 					--print('received response');
 					--self.print(response);
 
-					for j,rr in pairs(response.answer) do
+					for _, rr in pairs(response.answer) do
 						if rr.name:sub(-#response.question[1].name, -1) == response.question[1].name then
 							self:remember(rr, response.question[1].type)
 						end
@@ -903,7 +894,7 @@ function resolver:feed(sock, packet, force)
 		--print('received response');
 		--self.print(response);
 
-		for j,rr in pairs(response.answer) do
+		for _, rr in pairs(response.answer) do
 			self:remember(rr, response.question[1].type);
 		end
 
@@ -1020,7 +1011,7 @@ end
 
 
 function resolver.print(response)    -- - - - - - - - - - - - - resolver.print
-	for s,s in pairs { 'id', 'qr', 'opcode', 'aa', 'tc', 'rd', 'ra', 'z',
+	for _, s in pairs { 'id', 'qr', 'opcode', 'aa', 'tc', 'rd', 'ra', 'z',
 						'rcode', 'qdcount', 'ancount', 'nscount', 'arcount' } do
 		print( string.format('%-30s', 'header.'..s), response.header[s], hint(response.header, s) );
 	end
@@ -1033,9 +1024,9 @@ function resolver.print(response)    -- - - - - - - - - - - - - resolver.print
 
 	local common = { name=1, type=1, class=1, ttl=1, rdlength=1, rdata=1 };
 	local tmp;
-	for s,s in pairs({'answer', 'authority', 'additional'}) do
+	for _, s in pairs({'answer', 'authority', 'additional'}) do
 		for i,rr in pairs(response[s]) do
-			for j,t in pairs({ 'name', 'type', 'class', 'ttl', 'rdlength' }) do
+			for _, t in pairs({ 'name', 'type', 'class', 'ttl', 'rdlength' }) do
 				tmp = string.format('%s[%i].%s', s, i, t);
 				print(string.format('%-30s', tmp), rr[t], hint(rr, t));
 			end
@@ -1054,8 +1045,6 @@ end
 
 
 function dns.resolver ()    -- - - - - - - - - - - - - - - - - - - - - resolver
-	-- this function seems to be redundant with resolver.new ()
-
 	local r = { active = {}, cache = {}, unsorted = {}, wanted = {}, best_server = 1 };
 	setmetatable (r, resolver);
 	setmetatable (r.cache, cache_metatable);

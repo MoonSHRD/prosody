@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -29,41 +29,50 @@ local opt_keepalives = module:get_option_boolean("component_tcp_keepalives", mod
 
 local sessions = module:shared("sessions");
 
+local function keepalive(event)
+	local session = event.session;
+	if not session.notopen then
+		return event.session.send(' ');
+	end
+end
+
 function module.add_host(module)
 	if module:get_host_type() ~= "component" then
 		error("Don't load mod_component manually, it should be for a component, please see http://prosody.im/doc/components", 0);
 	end
-	
+
 	local env = module.environment;
 	env.connected = false;
+	env.session = false;
 
 	local send;
 
-	local function on_destroy(session, err)
+	local function on_destroy(session, err) --luacheck: ignore 212/err
 		env.connected = false;
+		env.session = false;
 		send = nil;
 		session.on_destroy = nil;
 	end
-	
+
 	-- Handle authentication attempts by component
 	local function handle_component_auth(event)
 		local session, stanza = event.origin, event.stanza;
-		
+
 		if session.type ~= "component_unauthed" then return; end
-	
+
 		if (not session.host) or #stanza.tags > 0 then
 			(session.log or log)("warn", "Invalid component handshake for host: %s", session.host);
 			session:close("not-authorized");
 			return true;
 		end
-		
+
 		local secret = module:get_option("component_secret");
 		if not secret then
 			(session.log or log)("warn", "Component attempted to identify as %s, but component_secret is not set", session.host);
 			session:close("not-authorized");
 			return true;
 		end
-		
+
 		local supplied_token = t_concat(stanza);
 		local calculated_token = sha1(session.streamid..secret, true);
 		if supplied_token:lower() ~= calculated_token:lower() then
@@ -71,14 +80,20 @@ function module.add_host(module)
 			session:close{ condition = "not-authorized", text = "Given token does not match calculated token" };
 			return true;
 		end
-		
+
 		if env.connected then
-			module:log("error", "Second component attempted to connect, denying connection");
-			session:close{ condition = "conflict", text = "Component already connected" };
-			return true;
+			local policy = module:get_option_string("component_conflict_resolve", "kick_new");
+			if policy == "kick_old" then
+				env.session:close{ condition = "conflict", text = "Replaced by a new connection" };
+			else -- kick_new
+				module:log("error", "Second component attempted to connect, denying connection");
+				session:close{ condition = "conflict", text = "Component already connected" };
+				return true;
+			end
 		end
-		
+
 		env.connected = true;
+		env.session = session;
 		send = session.send;
 		session.on_destroy = on_destroy;
 		session.component_validate_from = module:get_option_boolean("validate_from_addresses", true);
@@ -86,7 +101,7 @@ function module.add_host(module)
 		module:log("info", "External component successfully authenticated");
 		session.send(st.stanza("handshake"));
 		module:fire_event("component-authenticated", { session = session });
-	
+
 		return true;
 	end
 	module:hook("stanza/jabber:component:accept:handshake", handle_component_auth, -1);
@@ -117,7 +132,7 @@ function module.add_host(module)
 		end
 		return true;
 	end
-	
+
 	module:hook("iq/bare", handle_stanza, -1);
 	module:hook("message/bare", handle_stanza, -1);
 	module:hook("presence/bare", handle_stanza, -1);
@@ -127,7 +142,11 @@ function module.add_host(module)
 	module:hook("iq/host", handle_stanza, -1);
 	module:hook("message/host", handle_stanza, -1);
 	module:hook("presence/host", handle_stanza, -1);
+
+	module:hook("component-read-timeout", keepalive, -1);
 end
+
+module:hook("component-read-timeout", keepalive, -1);
 
 --- Network and stream part ---
 
@@ -141,7 +160,7 @@ local stream_callbacks = { default_ns = xmlns_component };
 
 local xmlns_xmpp_streams = "urn:ietf:params:xml:ns:xmpp-streams";
 
-function stream_callbacks.error(session, error, data, data2)
+function stream_callbacks.error(session, error, data)
 	if session.destroyed then return; end
 	module:log("warn", "Error processing component stream: %s", tostring(error));
 	if error == "no-stream" then
@@ -178,9 +197,7 @@ function stream_callbacks.streamopened(session, attr)
 	session.streamid = uuid_gen();
 	session.notopen = nil;
 	-- Return stream header
-	session.send("<?xml version='1.0'?>");
-	session.send(st.stanza("stream:stream", { xmlns=xmlns_component,
-			["xmlns:stream"]='http://etherx.jabber.org/streams', id=session.streamid, from=session.host }):top_tag());
+	session:open_stream();
 end
 
 function stream_callbacks.streamclosed(session)
@@ -276,26 +293,26 @@ function listener.onconnect(conn)
 	if opt_keepalives then
 		conn:setoption("keepalive", opt_keepalives);
 	end
-	
+
 	session.log("info", "Incoming Jabber component connection");
-	
+
 	local stream = new_xmpp_stream(session, stream_callbacks);
 	session.stream = stream;
-	
+
 	session.notopen = true;
-	
+
 	function session.reset_stream()
 		session.notopen = true;
 		session.stream:reset();
 	end
 
-	function session.data(conn, data)
+	function session.data(_, data)
 		local ok, err = stream:feed(data);
 		if ok then return; end
 		module:log("debug", "Received invalid XML (%s) %d bytes: %s", tostring(err), #data, data:sub(1, 300):gsub("[\r\n]+", " "):gsub("[%z\1-\31]", "_"));
 		session:close("not-well-formed");
 	end
-	
+
 	session.dispatch_stanza = stream_callbacks.handlestanza;
 
 	sessions[conn] = session;
@@ -308,6 +325,9 @@ function listener.ondisconnect(conn, err)
 	local session = sessions[conn];
 	if session then
 		(session.log or log)("info", "component disconnected: %s (%s)", tostring(session.host), tostring(err));
+		if session.host then
+			module:context(session.host):fire_event("component-disconnected", { session = session, reason = err });
+		end
 		if session.on_destroy then session:on_destroy(err); end
 		sessions[conn] = nil;
 		for k in pairs(session) do
@@ -316,12 +336,18 @@ function listener.ondisconnect(conn, err)
 			end
 		end
 		session.destroyed = true;
-		session = nil;
 	end
 end
 
 function listener.ondetach(conn)
 	sessions[conn] = nil;
+end
+
+function listener.onreadtimeout(conn)
+	local session = sessions[conn];
+	if session then
+		return (hosts[session.host] or prosody).events.fire_event("component-read-timeout", { session = session });
+	end
 end
 
 module:provides("net", {

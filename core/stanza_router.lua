@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -30,13 +30,18 @@ deprecated_warning"core_process_stanza";
 deprecated_warning"core_route_stanza";
 
 local valid_stanzas = { message = true, presence = true, iq = true };
-local function handle_unhandled_stanza(host, origin, stanza)
+local function handle_unhandled_stanza(host, origin, stanza) --luacheck: ignore 212/host
 	local name, xmlns, origin_type = stanza.name, stanza.attr.xmlns or "jabber:client", origin.type;
 	if xmlns == "jabber:client" and valid_stanzas[name] then
 		-- A normal stanza
 		local st_type = stanza.attr.type;
 		if st_type == "error" or (name == "iq" and st_type == "result") then
-			log("debug", "Discarding %s from %s of type: %s", name, origin_type, st_type or '<nil>');
+			if st_type == "error" then
+				local err_type, err_condition, err_message = stanza:get_error();
+				log("debug", "Discarding unhandled error %s (%s, %s) from %s: %s", name, err_type, err_condition or "unknown condition", origin_type, stanza:top_tag());
+			else
+				log("debug", "Discarding %s from %s of type: %s", name, origin_type, st_type or '<nil>');
+			end
 			return;
 		end
 		if name == "iq" and (st_type == "get" or st_type == "set") and stanza.tags[1] then
@@ -46,7 +51,7 @@ local function handle_unhandled_stanza(host, origin, stanza)
 		if origin.send then
 			origin.send(st.error_reply(stanza, "cancel", "service-unavailable"));
 		end
-	elseif not((name == "features" or name == "error") and xmlns == "http://etherx.jabber.org/streams") then -- FIXME remove check once we handle S2S features
+	else
 		log("warn", "Unhandled %s stream element or stanza: %s; xmlns=%s: %s", origin_type, name, xmlns, tostring(stanza)); -- we didn't handle it
 		origin:close("unsupported-stanza-type");
 	end
@@ -62,21 +67,16 @@ function core_process_stanza(origin, stanza)
 			return handle_unhandled_stanza(origin.host, origin, stanza);
 		end
 		if name == "iq" then
-			if not stanza.attr.id then stanza.attr.id = ""; end -- COMPAT Jabiru doesn't send the id attribute on roster requests
-			if not iq_types[st_type] or ((st_type == "set" or st_type == "get") and (#stanza.tags ~= 1)) then
-				origin.send(st.error_reply(stanza, "modify", "bad-request", "Invalid IQ type or incorrect number of children"));
+			if not iq_types[st_type] then
+				origin.send(st.error_reply(stanza, "modify", "bad-request", "Invalid IQ type"));
+				return;
+			elseif not stanza.attr.id then
+				origin.send(st.error_reply(stanza, "modify", "bad-request", "Missing required 'id' attribute"));
+				return;
+			elseif (st_type == "set" or st_type == "get") and (#stanza.tags ~= 1) then
+				origin.send(st.error_reply(stanza, "modify", "bad-request", "Incorrect number of children for IQ stanza"));
 				return;
 			end
-		end
-
-		if not origin.full_jid
-			and not(name == "iq" and st_type == "set" and stanza.tags[1] and stanza.tags[1].name == "bind"
-					and stanza.tags[1].attr.xmlns == "urn:ietf:params:xml:ns:xmpp-bind") then
-			-- authenticated client isn't bound and current stanza is not a bind request
-			if stanza.attr.type ~= "result" and stanza.attr.type ~= "error" then
-				origin.send(st.error_reply(stanza, "auth", "not-authorized")); -- FIXME maybe allow stanzas to account or server
-			end
-			return;
 		end
 
 		-- TODO also, stanzas should be returned to their original state before the function ends
@@ -199,7 +199,7 @@ function core_route_stanza(origin, stanza)
 	-- Auto-detect origin if not specified
 	origin = origin or hosts[from_host];
 	if not origin then return false; end
-	
+
 	if hosts[host] then
 		-- old stanza routing code removed
 		core_post_stanza(origin, stanza);
@@ -221,6 +221,8 @@ function core_route_stanza(origin, stanza)
 		end
 	end
 end
+
+--luacheck: ignore 122/prosody
 prosody.core_process_stanza = core_process_stanza;
 prosody.core_post_stanza = core_post_stanza;
 prosody.core_route_stanza = core_route_stanza;
