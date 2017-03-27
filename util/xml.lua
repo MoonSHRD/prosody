@@ -1,6 +1,8 @@
 
 local st = require "util.stanza";
 local lxp = require "lxp";
+local t_insert = table.insert;
+local t_remove = table.remove;
 
 local _ENV = nil;
 
@@ -14,6 +16,21 @@ local parse_xml = (function()
 		--luacheck: ignore 212/self
 		local handler = {};
 		local stanza = st.stanza("root");
+		local namespaces = {};
+		local prefixes = {};
+		function handler:StartNamespaceDecl(prefix, url)
+			if prefix ~= nil then
+				t_insert(namespaces, url);
+				t_insert(prefixes, prefix);
+			end
+		end
+		function handler:EndNamespaceDecl(prefix)
+			if prefix ~= nil then
+				-- we depend on each StartNamespaceDecl having a paired EndNamespaceDecl
+				t_remove(namespaces);
+				t_remove(prefixes);
+			end
+		end
 		function handler:StartElement(tagname, attr)
 			local curr_ns,name = tagname:match(ns_pattern);
 			if name == "" then
@@ -34,7 +51,11 @@ local parse_xml = (function()
 					end
 				end
 			end
-			stanza:tag(name, attr);
+			local n = {}
+			for i=1,#namespaces do
+				n[prefixes[i]] = namespaces[i];
+			end
+			stanza:tag(name, attr, n);
 		end
 		function handler:CharacterData(data)
 			stanza:text(data);

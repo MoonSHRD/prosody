@@ -28,7 +28,7 @@ local function missingdep(name, sources, msg)
 	end
 	print("");
 	print(msg or (name.." is required for Prosody to run, so we will now exit."));
-	print("More help can be found on our website, at http://prosody.im/doc/depends");
+	print("More help can be found on our website, at https://prosody.im/doc/depends");
 	print("**************************");
 	print("");
 end
@@ -40,7 +40,7 @@ end
 package.preload["util.ztact"] = function ()
 	if not package.loaded["core.loggingmanager"] then
 		error("util.ztact has been removed from Prosody and you need to fix your config "
-		    .."file. More information can be found at http://prosody.im/doc/packagers#ztact", 0);
+		    .."file. More information can be found at https://prosody.im/doc/packagers#ztact", 0);
 	else
 		error("module 'util.ztact' has been deprecated in Prosody 0.8.");
 	end
@@ -156,7 +156,7 @@ local function log_warnings()
 	if ssl then
 		local major, minor, veryminor, patched = ssl._VERSION:match("(%d+)%.(%d+)%.?(%d*)(M?)");
 		if not major or ((tonumber(major) == 0 and (tonumber(minor) or 0) <= 3 and (tonumber(veryminor) or 0) <= 2) and patched ~= "M") then
-			prosody.log("error", "This version of LuaSec contains a known bug that causes disconnects, see http://prosody.im/doc/depends");
+			prosody.log("error", "This version of LuaSec contains a known bug that causes disconnects, see https://prosody.im/doc/depends");
 		end
 	end
 	local lxp = softreq"lxp";
@@ -165,7 +165,7 @@ local function log_warnings()
 			prosody.log("error", "The version of LuaExpat on your system leaves Prosody "
 				.."vulnerable to denial-of-service attacks. You should upgrade to "
 				.."LuaExpat 1.3.0 or higher as soon as possible. See "
-				.."http://prosody.im/doc/depends#luaexpat for more information.");
+				.."https://prosody.im/doc/depends#luaexpat for more information.");
 		end
 		if not lxp.new({}).getcurrentbytecount then
 			prosody.log("error", "The version of LuaExpat on your system does not support "
@@ -173,7 +173,7 @@ local function log_warnings()
 				.."networks (e.g. the internet) vulnerable to denial-of-service "
 				.."attacks. You should upgrade to LuaExpat 1.3.0 or higher as "
 				.."soon as possible. See "
-				.."http://prosody.im/doc/depends#luaexpat for more information.");
+				.."https://prosody.im/doc/depends#luaexpat for more information.");
 		end
 	end
 end
