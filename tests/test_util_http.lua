@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -25,13 +25,17 @@ function formencode(formencode)
 end
 
 function formdecode(formdecode)
-	local t = formdecode("one=1&two=2");
-	assert_table(t[1]);
-	assert_equal(t[1].name, "one"); assert_equal(t[1].value, "1");
-	assert_table(t[2]);
-	assert_equal(t[2].name, "two"); assert_equal(t[2].value, "2");
+	do
+		local t = formdecode("one=1&two=2");
+		assert_table(t[1]);
+		assert_equal(t[1].name, "one"); assert_equal(t[1].value, "1");
+		assert_table(t[2]);
+		assert_equal(t[2].name, "two"); assert_equal(t[2].value, "2");
+	end
 
-	local t = formdecode("one+two=1&two+one%26=2");
-	assert_equal(t[1].name, "one two"); assert_equal(t[1].value, "1");
-	assert_equal(t[2].name, "two one&"); assert_equal(t[2].value, "2");
+	do
+		local t = formdecode("one+two=1&two+one%26=2");
+		assert_equal(t[1].name, "one two"); assert_equal(t[1].value, "1");
+		assert_equal(t[2].name, "two one&"); assert_equal(t[2].value, "2");
+	end
 end

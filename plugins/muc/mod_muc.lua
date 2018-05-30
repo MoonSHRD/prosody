@@ -1,27 +1,30 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
 
+local array = require "util.array";
 
 if module:get_host_type() ~= "component" then
 	error("MUC should be loaded as a component, please see http://prosody.im/doc/components", 0);
 end
 
 local muc_host = module:get_host();
-local muc_name = module:get_option("name");
-if type(muc_name) ~= "string" then muc_name = "Prosody Chatrooms"; end
+local muc_name = module:get_option_string("name", "Prosody Chatrooms");
 local restrict_room_creation = module:get_option("restrict_room_creation");
 if restrict_room_creation then
-	if restrict_room_creation == true then 
+	if restrict_room_creation == true then
 		restrict_room_creation = "admin";
 	elseif restrict_room_creation ~= "admin" and restrict_room_creation ~= "local" then
 		restrict_room_creation = nil;
 	end
 end
+local lock_rooms = module:get_option_boolean("muc_room_locking", false);
+local lock_room_timeout = module:get_option_number("muc_room_lock_timeout", 300);
+
 local muclib = module:require "muc";
 local muc_new_room = muclib.new_room;
 local jid_split = require "util.jid".split;
@@ -34,18 +37,31 @@ local hosts = prosody.hosts;
 rooms = {};
 local rooms = rooms;
 local persistent_rooms_storage = module:open_store("persistent");
-local persistent_rooms = persistent_rooms_storage:get() or {};
+local persistent_rooms, err = persistent_rooms_storage:get();
+if not persistent_rooms then
+	if err then
+		module:log("error", "Error loading list of persistent rooms from storage. Reload mod_muc or restart to recover.");
+		error("Storage error: "..err);
+	end
+	module:log("debug", "No persistent rooms found in the database");
+	persistent_rooms = {};
+end
 local room_configs = module:open_store("config");
 
 -- Configurable options
 muclib.set_max_history_length(module:get_option_number("max_history_messages"));
 
+module:depends("disco");
+module:add_identity("conference", "text", muc_name);
+module:add_feature("http://jabber.org/protocol/muc");
+
 local function is_admin(jid)
 	return um_is_admin(jid, module.host);
 end
 
-local _set_affiliation = muc_new_room.room_mt.set_affiliation;
-local _get_affiliation = muc_new_room.room_mt.get_affiliation;
+room_mt = muclib.room_mt; -- Yes, global.
+local _set_affiliation = room_mt.set_affiliation;
+local _get_affiliation = room_mt.get_affiliation;
 function muclib.room_mt:get_affiliation(jid)
 	if is_admin(jid) then return "owner"; end
 	return _get_affiliation(self, jid);
@@ -78,11 +94,21 @@ local function room_save(room, forced)
 	if forced then persistent_rooms_storage:set(nil, persistent_rooms); end
 end
 
-function create_room(jid)
+function create_room(jid, locked)
 	local room = muc_new_room(jid);
 	room.route_stanza = room_route_stanza;
 	room.save = room_save;
 	rooms[jid] = room;
+	if locked then
+		room.locked = true;
+		if lock_room_timeout and lock_room_timeout > 0 then
+			module:add_timer(lock_room_timeout, function ()
+				if room.locked then
+					room:destroy(); -- Not unlocked in time
+				end
+			end);
+		end
+	end
 	module:fire_event("muc-room-created", { room = room });
 	return room;
 end
@@ -90,15 +116,21 @@ end
 local persistent_errors = false;
 for jid in pairs(persistent_rooms) do
 	local node = jid_split(jid);
-	local data = room_configs:get(node);
+	local data, err = room_configs:get(node);
 	if data then
 		local room = create_room(jid);
 		room._data = data._data;
 		room._affiliations = data._affiliations;
-	else -- missing room data
+	elseif not err then -- missing room data
 		persistent_rooms[jid] = nil;
 		module:log("error", "Missing data for room '%s', removing from persistent room list", jid);
 		persistent_errors = true;
+	else -- error
+		module:log("error", "Error loading data for room '%s', locking it until service restart. Error was: %s", jid, err);
+		local room = muc_new_room(jid);
+		room.locked = true;
+		room._affiliations = { [muc_host] = "owner" }; -- To prevent unlocking
+		rooms[jid] = room;
 	end
 end
 if persistent_errors then persistent_rooms_storage:set(nil, persistent_rooms); end
@@ -107,20 +139,15 @@ local host_room = muc_new_room(muc_host);
 host_room.route_stanza = room_route_stanza;
 host_room.save = room_save;
 
-local function get_disco_info(stanza)
-	return st.iq({type='result', id=stanza.attr.id, from=muc_host, to=stanza.attr.from}):query("http://jabber.org/protocol/disco#info")
-		:tag("identity", {category='conference', type='text', name=muc_name}):up()
-		:tag("feature", {var="http://jabber.org/protocol/muc"}); -- TODO cache disco reply
-end
-local function get_disco_items(stanza)
-	local reply = st.iq({type='result', id=stanza.attr.id, from=muc_host, to=stanza.attr.from}):query("http://jabber.org/protocol/disco#items");
+module:hook("host-disco-items", function(event)
+	local reply = event.reply;
+	module:log("debug", "host-disco-items called");
 	for jid, room in pairs(rooms) do
-		if not room:is_hidden() then
+		if not room:get_hidden() then
 			reply:tag("item", {jid=jid, name=room:get_name()}):up();
 		end
 	end
-	return reply; -- TODO cache disco reply
-end
+end);
 
 local function handle_to_domain(event)
 	local origin, stanza = event.origin, event.stanza;
@@ -129,11 +156,7 @@ local function handle_to_domain(event)
 	if stanza.name == "iq" and type == "get" then
 		local xmlns = stanza.tags[1].attr.xmlns;
 		local node = stanza.tags[1].attr.node;
-		if xmlns == "http://jabber.org/protocol/disco#info" and not node then
-			origin.send(get_disco_info(stanza));
-		elseif xmlns == "http://jabber.org/protocol/disco#items" and not node then
-			origin.send(get_disco_items(stanza));
-		elseif xmlns == "http://jabber.org/protocol/muc#unique" then
+		if xmlns == "http://jabber.org/protocol/muc#unique" then
 			origin.send(st.reply(stanza):tag("unique", {xmlns = xmlns}):text(uuid_gen())); -- FIXME Random UUIDs can theoretically have collisions
 		else
 			origin.send(st.error_reply(stanza, "cancel", "service-unavailable")); -- TODO disco/etc
@@ -150,14 +173,16 @@ function stanza_handler(event)
 	local bare = jid_bare(stanza.attr.to);
 	local room = rooms[bare];
 	if not room then
-		if stanza.name ~= "presence" then
-			origin.send(st.error_reply(stanza, "cancel", "item-not-found"));
+		if stanza.name ~= "presence" or stanza.attr.type ~= nil then
+			if stanza.attr.type ~= "error" then
+				origin.send(st.error_reply(stanza, "cancel", "item-not-found"));
+			end
 			return true;
 		end
 		if not(restrict_room_creation) or
 		  is_admin(stanza.attr.from) or
 		  (restrict_room_creation == "local" and select(2, jid_split(stanza.attr.from)) == module.host:gsub("^[^%.]+%.", "")) then
-			room = create_room(bare);
+			room = create_room(bare, lock_rooms);
 		end
 	end
 	if room then
@@ -220,7 +245,8 @@ function shutdown_component()
 	if not saved then
 		local stanza = st.presence({type = "unavailable"})
 			:tag("x", {xmlns = "http://jabber.org/protocol/muc#user"})
-				:tag("item", { affiliation='none', role='none' }):up();
+				:tag("item", { affiliation='none', role='none' }):up()
+				:tag("status", { code = "332"}):up();
 		for roomjid, room in pairs(rooms) do
 			shutdown_room(room, stanza);
 		end
@@ -229,3 +255,39 @@ function shutdown_component()
 end
 module.unload = shutdown_component;
 module:hook_global("server-stopping", shutdown_component);
+
+-- Ad-hoc commands
+module:depends("adhoc")
+local t_concat = table.concat;
+local keys = require "util.iterators".keys;
+local adhoc_new = module:require "adhoc".new;
+local adhoc_initial = require "util.adhoc".new_initial_data_form;
+local dataforms_new = require "util.dataforms".new;
+
+local destroy_rooms_layout = dataforms_new {
+	title = "Destroy rooms";
+	instructions = "Select the rooms to destroy";
+
+	{ name = "FORM_TYPE", type = "hidden", value = "http://prosody.im/protocol/muc#destroy" };
+	{ name = "rooms", type = "list-multi", required = true, label = "Rooms to destroy:"};
+};
+
+local destroy_rooms_handler = adhoc_initial(destroy_rooms_layout, function()
+	return { rooms = array.collect(keys(rooms)):sort() };
+end, function(fields, errors)
+	if errors then
+		local errmsg = {};
+		for name, err in pairs(errors) do
+			errmsg[#errmsg + 1] = name .. ": " .. err;
+		end
+		return { status = "completed", error = { message = t_concat(errmsg, "\n") } };
+	end
+	for _, room in ipairs(fields.rooms) do
+		rooms[room]:destroy();
+		rooms[room] = nil;
+	end
+	return { status = "completed", info = "The following rooms were destroyed:\n"..t_concat(fields.rooms, "\n") };
+end);
+local destroy_rooms_desc = adhoc_new("Destroy Rooms", "http://prosody.im/protocol/muc#destroy", destroy_rooms_handler, "admin");
+
+module:provides("adhoc", destroy_rooms_desc);

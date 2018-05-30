@@ -16,7 +16,7 @@ local saslprep = require "util.encodings".stringprep.saslprep;
 local nodeprep = require "util.encodings".stringprep.nodeprep;
 local log = require "util.logger".init("sasl");
 
-module "sasl.plain"
+local _ENV = nil;
 
 -- ================================
 -- SASL PLAIN according to RFC 4616
@@ -63,6 +63,8 @@ local function plain(self, message)
 		end
 	end
 
+	self.username = authentication
+
 	local correct, state = false, false;
 	if self.profile.plain then
 		local correct_password;
@@ -72,7 +74,6 @@ local function plain(self, message)
 		correct, state = self.profile.plain_test(self, authentication, password, self.realm);
 	end
 
-	self.username = authentication
 	if state == false then
 		return "failure", "account-disabled";
 	elseif state == nil or not correct then
@@ -82,8 +83,10 @@ local function plain(self, message)
 	return "success";
 end
 
-function init(registerMechanism)
+local function init(registerMechanism)
 	registerMechanism("PLAIN", {"plain", "plain_test"}, plain);
 end
 
-return _M;
+return {
+	init = init;
+}

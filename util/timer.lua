@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -9,7 +9,7 @@
 local server = require "net.server";
 local math_min = math.min
 local math_huge = math.huge
-local get_time = require "socket".gettime;
+local get_time = require "util.time".now
 local t_insert = table.insert;
 local pairs = pairs;
 local type = type;
@@ -17,7 +17,7 @@ local type = type;
 local data = {};
 local new_data = {};
 
-module "timer"
+local _ENV = nil;
 
 local _add_task;
 if not server.event then
@@ -42,7 +42,7 @@ if not server.event then
 			end
 			new_data = {};
 		end
-		
+
 		local next_time = math_huge;
 		for i, d in pairs(data) do
 			local t, callback = d[1], d[2];
@@ -78,6 +78,6 @@ else
 	end
 end
 
-add_task = _add_task;
-
-return _M;
+return {
+	add_task = _add_task;
+};

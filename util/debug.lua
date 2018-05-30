@@ -1,6 +1,9 @@
 -- Variables ending with these names will not
 -- have their values printed ('password' includes
 -- 'new_password', etc.)
+--
+-- luacheck: ignore 122/debug
+
 local censored_names = {
 	password = true;
 	passwd = true;
@@ -13,7 +16,7 @@ local termcolours = require "util.termcolours";
 local getstring = termcolours.getstring;
 local styles;
 do
-	_ = termcolours.getstyle;
+	local _ = termcolours.getstyle;
 	styles = {
 		boundary_padding = _("bright");
 		filename         = _("bright", "blue");
@@ -22,20 +25,23 @@ do
 		location         = _("yellow");
 	};
 end
-module("debugx", package.seeall);
 
-function get_locals_table(level)
-	level = level + 1; -- Skip this function itself
+local function get_locals_table(thread, level)
 	local locals = {};
 	for local_num = 1, math.huge do
-		local name, value = debug.getlocal(level, local_num);
+		local name, value;
+		if thread then
+			name, value = debug.getlocal(thread, level, local_num);
+		else
+			name, value = debug.getlocal(level+1, local_num);
+		end
 		if not name then break; end
 		table.insert(locals, { name = name, value = value });
 	end
 	return locals;
 end
 
-function get_upvalues_table(func)
+local function get_upvalues_table(func)
 	local upvalues = {};
 	if func then
 		for upvalue_num = 1, math.huge do
@@ -47,7 +53,7 @@ function get_upvalues_table(func)
 	return upvalues;
 end
 
-function string_from_var_table(var_table, max_line_len, indent_str)
+local function string_from_var_table(var_table, max_line_len, indent_str)
 	local var_string = {};
 	local col_pos = 0;
 	max_line_len = max_line_len or math.huge;
@@ -83,33 +89,25 @@ function string_from_var_table(var_table, max_line_len, indent_str)
 	end
 end
 
-function get_traceback_table(thread, start_level)
+local function get_traceback_table(thread, start_level)
 	local levels = {};
 	for level = start_level, math.huge do
 		local info;
 		if thread then
-			info = debug.getinfo(thread, level+1);
+			info = debug.getinfo(thread, level);
 		else
 			info = debug.getinfo(level+1);
 		end
 		if not info then break; end
-		
+
 		levels[(level-start_level)+1] = {
 			level = level;
 			info = info;
-			locals = get_locals_table(level+1);
+			locals = get_locals_table(thread, level+(thread and 0 or 1));
 			upvalues = get_upvalues_table(info.func);
 		};
-	end	
-	return levels;
-end
-
-function traceback(...)
-	local ok, ret = pcall(_traceback, ...);
-	if not ok then
-		return "Error in error handling: "..ret;
 	end
-	return ret;
+	return levels;
 end
 
 local function build_source_boundary_marker(last_source_desc)
@@ -117,7 +115,7 @@ local function build_source_boundary_marker(last_source_desc)
 	return getstring(styles.boundary_padding, "v"..padding).." "..getstring(styles.filename, last_source_desc).." "..getstring(styles.boundary_padding, padding..(#last_source_desc%2==0 and "-v" or "v "));
 end
 
-function _traceback(thread, message, level)
+local function _traceback(thread, message, level)
 
 	-- Lua manual says: debug.traceback ([thread,] [message [, level]])
 	-- I fathom this to mean one of:
@@ -134,15 +132,15 @@ function _traceback(thread, message, level)
 		return nil; -- debug.traceback() does this
 	end
 
-	level = level or 1;
+	level = level or 0;
 
 	message = message and (message.."\n") or "";
-	
-	-- +3 counts for this function, and the pcall() and wrapper above us
-	local levels = get_traceback_table(thread, level+3);
-	
+
+	-- +3 counts for this function, and the pcall() and wrapper above us, the +1... I don't know.
+	local levels = get_traceback_table(thread, level+(thread == nil and 4 or 0));
+
 	local last_source_desc;
-	
+
 	local lines = {};
 	for nlevel, level in ipairs(levels) do
 		local info = level.info;
@@ -171,9 +169,11 @@ function _traceback(thread, message, level)
 		nlevel = nlevel-1;
 		table.insert(lines, "\t"..(nlevel==0 and ">" or " ")..getstring(styles.level_num, "("..nlevel..") ")..line);
 		local npadding = (" "):rep(#tostring(nlevel));
-		local locals_str = string_from_var_table(level.locals, optimal_line_length, "\t            "..npadding);
-		if locals_str then
-			table.insert(lines, "\t    "..npadding.."Locals: "..locals_str);
+		if level.locals then
+			local locals_str = string_from_var_table(level.locals, optimal_line_length, "\t            "..npadding);
+			if locals_str then
+				table.insert(lines, "\t    "..npadding.."Locals: "..locals_str);
+			end
 		end
 		local upvalues_str = string_from_var_table(level.upvalues, optimal_line_length, "\t            "..npadding);
 		if upvalues_str then
@@ -186,8 +186,23 @@ function _traceback(thread, message, level)
 	return message.."stack traceback:\n"..table.concat(lines, "\n");
 end
 
-function use()
+local function traceback(...)
+	local ok, ret = pcall(_traceback, ...);
+	if not ok then
+		return "Error in error handling: "..ret;
+	end
+	return ret;
+end
+
+local function use()
 	debug.traceback = traceback;
 end
 
-return _M;
+return {
+	get_locals_table = get_locals_table;
+	get_upvalues_table = get_upvalues_table;
+	string_from_var_table = string_from_var_table;
+	get_traceback_table = get_traceback_table;
+	traceback = traceback;
+	use = use;
+};

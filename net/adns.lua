@@ -1,61 +1,37 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
 
 local server = require "net.server";
-local dns = require "net.dns";
+local new_resolver = require "net.dns".resolver;
 
 local log = require "util.logger".init("adns");
 
-local t_insert, t_remove = table.insert, table.remove;
 local coroutine, tostring, pcall = coroutine, tostring, pcall;
+local setmetatable = setmetatable;
 
 local function dummy_send(sock, data, i, j) return (j-i)+1; end
 
-module "adns"
+local _ENV = nil;
 
-function lookup(handler, qname, qtype, qclass)
-	return coroutine.wrap(function (peek)
-				if peek then
-					log("debug", "Records for %s already cached, using those...", qname);
-					handler(peek);
-					return;
-				end
-				log("debug", "Records for %s not in cache, sending query (%s)...", qname, tostring(coroutine.running()));
-				local ok, err = dns.query(qname, qtype, qclass);
-				if ok then
-					coroutine.yield({ qclass or "IN", qtype or "A", qname, coroutine.running()}); -- Wait for reply
-					log("debug", "Reply for %s (%s)", qname, tostring(coroutine.running()));
-				end
-				if ok then
-					ok, err = pcall(handler, dns.peek(qname, qtype, qclass));
-				else
-					log("error", "Error sending DNS query: %s", err);
-					ok, err = pcall(handler, nil, err);
-				end
-				if not ok then
-					log("error", "Error in DNS response handler: %s", tostring(err));
-				end
-			end)(dns.peek(qname, qtype, qclass));
-end
+local async_resolver_methods = {};
+local async_resolver_mt = { __index = async_resolver_methods };
 
-function cancel(handle, call_handler, reason)
-	log("warn", "Cancelling DNS lookup for %s", tostring(handle[3]));
-	dns.cancel(handle[1], handle[2], handle[3], handle[4], call_handler);
-end
+local query_methods = {};
+local query_mt = { __index = query_methods };
 
-function new_async_socket(sock, resolver)
+local function new_async_socket(sock, resolver)
 	local peername = "<unknown>";
 	local listener = {};
 	local handler = {};
 	local err;
 	function listener.onincoming(conn, data)
 		if data then
-			dns.feed(handler, data);
+			resolver:feed(handler, data);
 		end
 	end
 	function listener.ondisconnect(conn, err)
@@ -65,7 +41,7 @@ function new_async_socket(sock, resolver)
 			if resolver.socketset[conn] == resolver.best_server and resolver.best_server == #servers then
 				log("error", "Exhausted all %d configured DNS servers, next lookup will try %s again", #servers, servers[1]);
 			end
-		
+
 			resolver:servfail(conn); -- Let the magic commence
 		end
 	end
@@ -73,7 +49,7 @@ function new_async_socket(sock, resolver)
 	if not handler then
 		return nil, err;
 	end
-	
+
 	handler.settimeout = function () end
 	handler.setsockname = function (_, ...) return sock:setsockname(...); end
 	handler.setpeername = function (_, ...) peername = (...); local ret, err = sock:setpeername(...); _:set_send(dummy_send); return ret, err; end
@@ -86,6 +62,47 @@ function new_async_socket(sock, resolver)
 	return handler;
 end
 
-dns.socket_wrapper_set(new_async_socket);
+function async_resolver_methods:lookup(handler, qname, qtype, qclass)
+	local resolver = self._resolver;
+	return coroutine.wrap(function (peek)
+				if peek then
+					log("debug", "Records for %s already cached, using those...", qname);
+					handler(peek);
+					return;
+				end
+				log("debug", "Records for %s not in cache, sending query (%s)...", qname, tostring(coroutine.running()));
+				local ok, err = resolver:query(qname, qtype, qclass);
+				if ok then
+					coroutine.yield(setmetatable({ resolver, qclass or "IN", qtype or "A", qname, coroutine.running()}, query_mt)); -- Wait for reply
+					log("debug", "Reply for %s (%s)", qname, tostring(coroutine.running()));
+				end
+				if ok then
+					ok, err = pcall(handler, resolver:peek(qname, qtype, qclass));
+				else
+					log("error", "Error sending DNS query: %s", err);
+					ok, err = pcall(handler, nil, err);
+				end
+				if not ok then
+					log("error", "Error in DNS response handler: %s", tostring(err));
+				end
+			end)(resolver:peek(qname, qtype, qclass));
+end
 
-return _M;
+function query_methods:cancel(call_handler, reason)
+	log("warn", "Cancelling DNS lookup for %s", tostring(self[4]));
+	self[1].cancel(self[2], self[3], self[4], self[5], call_handler);
+end
+
+local function new_async_resolver()
+	local resolver = new_resolver();
+	resolver:socket_wrapper_set(new_async_socket);
+	return setmetatable({ _resolver = resolver}, async_resolver_mt);
+end
+
+return {
+	lookup = function (...)
+		return new_async_resolver():lookup(...);
+	end;
+	resolver = new_async_resolver;
+	new_async_socket = new_async_socket;
+};

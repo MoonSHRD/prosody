@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -19,8 +19,7 @@ module:hook("pre-presence/bare", function(event)
 	local stanza = event.stanza;
 	if not(stanza.attr.to) and stanza.attr.type == "unavailable" then
 		local t = os.time();
-		local s = stanza:child_with_name("status");
-		s = s and #s.tags == 0 and s[1] or "";
+		local s = stanza:get_child_text("status");
 		map[event.origin.username] = {s = s, t = t};
 	end
 end, 10);

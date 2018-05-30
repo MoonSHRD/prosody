@@ -1,16 +1,17 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
 
 local select = select;
 local t_insert = table.insert;
-local unpack, pairs, next, type = unpack, pairs, next, type;
+local pairs, next, type = pairs, next, type;
+local unpack = table.unpack or unpack; --luacheck: ignore 113
 
-module "multitable"
+local _ENV = nil;
 
 local function get(self, ...)
 	local t = self.data;
@@ -126,7 +127,7 @@ local function search_add(self, results, ...)
 	return results;
 end
 
-function iter(self, ...)
+local function iter(self, ...)
 	local query = { ... };
 	local maxdepth = select("#", ...);
 	local stack = { self.data };
@@ -161,7 +162,7 @@ function iter(self, ...)
 	return it, self;
 end
 
-function new()
+local function new()
 	return {
 		data = {};
 		get = get;
@@ -174,4 +175,7 @@ function new()
 	};
 end
 
-return _M;
+return {
+	iter = iter;
+	new = new;
+};

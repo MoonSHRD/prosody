@@ -1,23 +1,28 @@
 -- Prosody IM
 -- Copyright (C) 2008-2012 Matthew Wild
 -- Copyright (C) 2008-2012 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
 
 local config = require "core.configmanager";
-local modulemanager = require "modulemanager"; -- This is necessary to avoid require loops
 local array = require "util.array";
 local set = require "util.set";
+local it = require "util.iterators";
 local logger = require "util.logger";
 local pluginloader = require "util.pluginloader";
 local timer = require "util.timer";
+local resolve_relative_path = require"util.paths".resolve_relative_path;
+local measure = require "core.statsmanager".measure;
+local st = require "util.stanza";
 
 local t_insert, t_remove, t_concat = table.insert, table.remove, table.concat;
 local error, setmetatable, type = error, setmetatable, type;
-local ipairs, pairs, select, unpack = ipairs, pairs, select, unpack;
+local ipairs, pairs, select = ipairs, pairs, select;
+local unpack = table.unpack or unpack; --luacheck: ignore 113
 local tonumber, tostring = tonumber, tostring;
+local require = require;
 
 local prosody = prosody;
 local hosts = prosody.hosts;
@@ -44,14 +49,14 @@ function api:get_host()
 end
 
 function api:get_host_type()
-	return self.host ~= "*" and hosts[self.host].type or nil;
+	return (self.host == "*" and "global") or hosts[self.host].type or "local";
 end
 
 function api:set_global()
 	self.host = "*";
 	-- Update the logger
 	local _log = logger.init("mod_"..self.name);
-	self.log = function (self, ...) return _log(...); end;
+	self.log = function (self, ...) return _log(...); end; --luacheck: ignore self
 	self._log = _log;
 	self.global = true;
 end
@@ -59,8 +64,8 @@ end
 function api:add_feature(xmlns)
 	self:add_item("feature", xmlns);
 end
-function api:add_identity(category, type, name)
-	self:add_item("identity", {category = category, type = type, name = name});
+function api:add_identity(category, identity_type, name)
+	self:add_item("identity", {category = category, type = identity_type, name = name});
 end
 function api:add_extension(data)
 	self:add_item("extension", data);
@@ -71,10 +76,10 @@ function api:has_feature(xmlns)
 	end
 	return false;
 end
-function api:has_identity(category, type, name)
+function api:has_identity(category, identity_type, name)
 	for _, id in ipairs(self:get_host_items("identity")) do
-		if id.category == category and id.type == type and id.name == name then
-			return true; 
+		if id.category == category and id.type == identity_type and id.name == name then
+			return true;
 		end
 	end
 	return false;
@@ -90,6 +95,7 @@ function api:hook_object_event(object, event, handler, priority)
 end
 
 function api:unhook_object_event(object, event, handler)
+	self.event_handlers:set(object, event, handler, nil);
 	return object.remove_handler(event, handler);
 end
 
@@ -109,20 +115,35 @@ function api:hook_tag(xmlns, name, handler, priority)
 		self:log("warn", "Error: Insufficient parameters to module:hook_stanza()");
 		return;
 	end
-	return self:hook("stanza/"..(xmlns and (xmlns..":") or "")..name, function (data) return handler(data.origin, data.stanza, data); end, priority);
+	return self:hook("stanza/"..(xmlns and (xmlns..":") or "")..name,
+		function (data) return handler(data.origin, data.stanza, data); end, priority);
 end
 api.hook_stanza = api.hook_tag; -- COMPAT w/pre-0.9
 
+function api:unhook(event, handler)
+	return self:unhook_object_event((hosts[self.host] or prosody).events, event, handler);
+end
+
+function api:wrap_object_event(events_object, event, handler)
+	return self:hook_object_event(assert(events_object.wrappers, "no wrappers"), event, handler);
+end
+
+function api:wrap_event(event, handler)
+	return self:wrap_object_event((hosts[self.host] or prosody).events, event, handler);
+end
+
+function api:wrap_global(event, handler)
+	return self:hook_object_event(prosody.events, event, handler);
+end
+
 function api:require(lib)
-	local f, n = pluginloader.load_code(self.name, lib..".lib.lua", self.environment);
-	if not f then
-		f, n = pluginloader.load_code(lib, lib..".lib.lua", self.environment);
-	end
+	local f, n = pluginloader.load_code_ext(self.name, lib, "lib.lua", self.environment);
 	if not f then error("Failed to load plugin library '"..lib.."', error: "..n); end -- FIXME better error message
 	return f();
 end
 
 function api:depends(name)
+	local modulemanager = require"core.modulemanager";
 	if not self.dependencies then
 		self.dependencies = {};
 		self:hook("module-reloaded", function (event)
@@ -167,7 +188,8 @@ function api:shared(...)
 		local path = paths[i];
 		if path:sub(1,1) ~= "/" then -- Prepend default components
 			local n_components = select(2, path:gsub("/", "%1"));
-			path = (n_components<#default_path_components and "/" or "")..t_concat(default_path_components, "/", 1, #default_path_components-n_components).."/"..path;
+			path = (n_components<#default_path_components and "/" or "")
+				..t_concat(default_path_components, "/", 1, #default_path_components-n_components).."/"..path;
 		end
 		local shared = shared_data[path];
 		if not shared then
@@ -191,7 +213,7 @@ function api:get_option(name, default_value)
 	return value;
 end
 
-function api:get_option_string(name, default_value)
+function api:get_option_scalar(name, default_value)
 	local value = self:get_option(name, default_value);
 	if type(value) == "table" then
 		if #value > 1 then
@@ -199,6 +221,11 @@ function api:get_option_string(name, default_value)
 		end
 		value = value[1];
 	end
+	return value;
+end
+
+function api:get_option_string(name, default_value)
+	local value = self:get_option_scalar(name, default_value);
 	if value == nil then
 		return nil;
 	end
@@ -206,13 +233,7 @@ function api:get_option_string(name, default_value)
 end
 
 function api:get_option_number(name, ...)
-	local value = self:get_option(name, ...);
-	if type(value) == "table" then
-		if #value > 1 then
-			self:log("error", "Config option '%s' does not take a list, using just the first item", name);
-		end
-		value = value[1];
-	end
+	local value = self:get_option_scalar(name, ...);
 	local ret = tonumber(value);
 	if value ~= nil and ret == nil then
 		self:log("error", "Config option '%s' not understood, expecting a number", name);
@@ -221,13 +242,7 @@ function api:get_option_number(name, ...)
 end
 
 function api:get_option_boolean(name, ...)
-	local value = self:get_option(name, ...);
-	if type(value) == "table" then
-		if #value > 1 then
-			self:log("error", "Config option '%s' does not take a list, using just the first item", name);
-		end
-		value = value[1];
-	end
+	local value = self:get_option_scalar(name, ...);
 	if value == nil then
 		return nil;
 	end
@@ -252,21 +267,21 @@ function api:get_option_array(name, ...)
 	if value == nil then
 		return nil;
 	end
-	
+
 	if type(value) ~= "table" then
 		return array{ value }; -- Assume any non-list is a single-item list
 	end
-	
+
 	return array():append(value); -- Clone
 end
 
 function api:get_option_set(name, ...)
 	local value = self:get_option_array(name, ...);
-	
+
 	if value == nil then
 		return nil;
 	end
-	
+
 	return set.new(value);
 end
 
@@ -281,6 +296,20 @@ function api:get_option_inherited_set(name, ...)
 	value:include(global_value);
 	return value;
 end
+
+function api:get_option_path(name, default, parent)
+	if parent == nil then
+		parent = parent or self:get_directory();
+	elseif prosody.paths[parent] then
+		parent = prosody.paths[parent];
+	end
+	local value = self:get_option_string(name, default);
+	if value == nil then
+		return nil;
+	end
+	return resolve_relative_path(parent, value);
+end
+
 
 function api:context(host)
 	return setmetatable({host=host or "*"}, {__index=self,__newindex=self});
@@ -304,15 +333,16 @@ function api:remove_item(key, value)
 end
 
 function api:get_host_items(key)
+	local modulemanager = require"core.modulemanager";
 	local result = modulemanager.get_items(key, self.host) or {};
 	return result;
 end
 
-function api:handle_items(type, added_cb, removed_cb, existing)
-	self:hook("item-added/"..type, added_cb);
-	self:hook("item-removed/"..type, removed_cb);
+function api:handle_items(item_type, added_cb, removed_cb, existing)
+	self:hook("item-added/"..item_type, added_cb);
+	self:hook("item-removed/"..item_type, removed_cb);
 	if existing ~= false then
-		for _, item in ipairs(self:get_host_items(type)) do
+		for _, item in ipairs(self:get_host_items(item_type)) do
 			added_cb({ item = item });
 		end
 	end
@@ -339,8 +369,16 @@ function api:provides(name, item)
 	self:add_item(name.."-provider", item);
 end
 
-function api:send(stanza)
-	return core_post_stanza(hosts[self.host], stanza);
+function api:send(stanza, origin)
+	return core_post_stanza(origin or hosts[self.host], stanza);
+end
+
+function api:broadcast(jids, stanza, iter)
+	for jid in (iter or it.values)(jids) do
+		local new_stanza = st.clone(stanza);
+		new_stanza.attr.to = jid;
+		core_post_stanza(hosts[self.host], new_stanza);
+	end
 end
 
 function api:add_timer(delay, callback)
@@ -356,12 +394,35 @@ function api:get_directory()
 end
 
 function api:load_resource(path, mode)
-	path = config.resolve_relative_path(self:get_directory(), path);
+	path = resolve_relative_path(self:get_directory(), path);
 	return io.open(path, mode);
 end
 
-function api:open_store(name, type)
-	return storagemanager.open(self.host, name or self.name, type);
+function api:open_store(name, store_type)
+	return require"core.storagemanager".open(self.host, name or self.name, store_type);
+end
+
+function api:measure(name, stat_type)
+	return measure(stat_type, "/"..self.host.."/mod_"..self.name.."/"..name);
+end
+
+function api:measure_object_event(events_object, event_name, stat_name)
+	local m = self:measure(stat_name or event_name, "times");
+	local function handler(handlers, _event_name, _event_data)
+		local finished = m();
+		local ret = handlers(_event_name, _event_data);
+		finished();
+		return ret;
+	end
+	return self:hook_object_event(events_object, event_name, handler);
+end
+
+function api:measure_event(event_name, stat_name)
+	return self:measure_object_event((hosts[self.host] or prosody).events.wrappers, event_name, stat_name);
+end
+
+function api:measure_global_event(event_name, stat_name)
+	return self:measure_object_event(prosody.events.wrappers, event_name, stat_name);
 end
 
 return api;

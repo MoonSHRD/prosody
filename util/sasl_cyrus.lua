@@ -60,7 +60,7 @@ local sasl_errstring = {
 };
 setmetatable(sasl_errstring, { __index = function() return "undefined error!" end });
 
-module "sasl_cyrus"
+local _ENV = nil;
 
 local method = {};
 method.__index = method;
@@ -78,11 +78,11 @@ local function init(service_name)
 end
 
 -- create a new SASL object which can be used to authenticate clients
--- host_fqdn may be nil in which case gethostname() gives the value. 
+-- host_fqdn may be nil in which case gethostname() gives the value.
 --      For GSSAPI, this determines the hostname in the service ticket (after
 --      reverse DNS canonicalization, only if [libdefaults] rdns = true which
---      is the default).  
-function new(realm, service_name, app_name, host_fqdn)
+--      is the default).
+local function new(realm, service_name, app_name, host_fqdn)
 
 	init(app_name or service_name);
 
@@ -163,4 +163,6 @@ function method:process(message)
 	end
 end
 
-return _M;
+return {
+	new = new;
+};

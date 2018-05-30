@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -16,8 +16,10 @@ local stat = lfs.attributes;
 local build_path = require"socket.url".build_path;
 local path_sep = package.config:sub(1,1);
 
-local base_path = module:get_option_string("http_files_dir", module:get_option_string("http_path"));
-local dir_indices = module:get_option("http_index_files", { "index.html", "index.htm" });
+local base_path = module:get_option_path("http_files_dir", module:get_option_path("http_path"));
+local cache_size = module:get_option_number("http_files_cache_size", 128);
+local cache_max_file_size = module:get_option_number("http_files_cache_max_file_size", 4096);
+local dir_indices = module:get_option_array("http_index_files", { "index.html", "index.htm" });
 local directory_index = module:get_option_boolean("http_dir_listing");
 
 local mime_map = module:shared("/*/http_files/mime").types;
@@ -35,7 +37,7 @@ if not mime_map then
 	};
 	module:shared("/*/http_files/mime").types = mime_map;
 
-	local mime_types, err = open(module:get_option_string("mime_types_file", "/etc/mime.types"),"r");
+	local mime_types, err = open(module:get_option_path("mime_types_file", "/etc/mime.types", "config"), "r");
 	if mime_types then
 		local mime_data = mime_types:read("*a");
 		mime_types:close();
@@ -81,7 +83,7 @@ function sanitize_path(path)
 	return "/"..table.concat(out, "/");
 end
 
-local cache = setmetatable({}, { __mode = "kv" }); -- Let the garbage collector have it if it wants to.
+local cache = require "util.cache".new(cache_size);
 
 function serve(opts)
 	if type(opts) ~= "table" then -- assume path string
@@ -109,7 +111,7 @@ function serve(opts)
 		local last_modified = os_date('!%a, %d %b %Y %H:%M:%S GMT', attr.modification);
 		response_headers.last_modified = last_modified;
 
-		local etag = ("%02x-%x-%x-%x"):format(attr.dev or 0, attr.ino or 0, attr.size or 0, attr.modification or 0);
+		local etag = ('"%02x-%x-%x-%x"'):format(attr.dev or 0, attr.ino or 0, attr.size or 0, attr.modification or 0);
 		response_headers.etag = etag;
 
 		local if_none_match = request_headers.if_none_match
@@ -119,7 +121,7 @@ function serve(opts)
 			return 304;
 		end
 
-		local data = cache[orig_path];
+		local data = cache:get(orig_path);
 		if data and data.etag == etag then
 			response_headers.content_type = data.content_type;
 			data = data.data;
@@ -142,23 +144,27 @@ function serve(opts)
 			if not data then
 				return 403;
 			end
-			cache[orig_path] = { data = data, content_type = mime_map.html; etag = etag; };
+			cache:set(orig_path, { data = data, content_type = mime_map.html; etag = etag; });
 			response_headers.content_type = mime_map.html;
 
 		else
 			local f, err = open(full_path, "rb");
-			if f then
-				data, err = f:read("*a");
-				f:close();
-			end
-			if not data then
-				module:log("debug", "Could not open or read %s. Error was %s", full_path, err);
+			if not f then
+				module:log("debug", "Could not open %s. Error was %s", full_path, err);
 				return 403;
 			end
 			local ext = full_path:match("%.([^./]+)$");
 			local content_type = ext and mime_map[ext];
-			cache[orig_path] = { data = data; content_type = content_type; etag = etag };
 			response_headers.content_type = content_type;
+			if attr.size > cache_max_file_size then
+				response_headers.content_length = attr.size;
+				module:log("debug", "%d > cache_max_file_size", attr.size);
+				return response:send_file(f);
+			else
+				data = f:read("*a");
+				f:close();
+			end
+			cache:set(orig_path, { data = data; content_type = content_type; etag = etag });
 		end
 
 		return response:send(data);

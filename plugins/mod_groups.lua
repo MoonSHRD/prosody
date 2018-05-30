@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -10,18 +10,18 @@
 local groups;
 local members;
 
-local groups_file;
-
 local jid, datamanager = require "util.jid", require "util.datamanager";
 local jid_prep = jid.prep;
 
 local module_host = module:get_host();
 
-function inject_roster_contacts(username, host, roster)
+function inject_roster_contacts(event)
+	local username, host= event.username, event.host;
 	--module:log("debug", "Injecting group members to roster");
 	local bare_jid = username.."@"..host;
 	if not members[bare_jid] and not members[false] then return; end -- Not a member of any groups
-	
+
+	local roster = event.roster;
 	local function import_jids_to_roster(group_name)
 		for jid in pairs(groups[group_name]) do
 			-- Add them to roster
@@ -48,7 +48,7 @@ function inject_roster_contacts(username, host, roster)
 			import_jids_to_roster(group_name);
 		end
 	end
-	
+
 	-- Import public groups
 	if members[false] then
 		for _, group_name in ipairs(members[false]) do
@@ -56,7 +56,7 @@ function inject_roster_contacts(username, host, roster)
 			import_jids_to_roster(group_name);
 		end
 	end
-	
+
 	if roster[false] then
 		roster[false].version = true;
 	end
@@ -80,12 +80,12 @@ function remove_virtual_contacts(username, host, datastore, data)
 end
 
 function module.load()
-	groups_file = module:get_option_string("groups_file");
+	local groups_file = module:get_option_path("groups_file", nil, "config");
 	if not groups_file then return; end
-	
+
 	module:hook("roster-load", inject_roster_contacts);
 	datamanager.add_callback(remove_virtual_contacts);
-	
+
 	groups = { default = {} };
 	members = { };
 	local curr_group = "default";

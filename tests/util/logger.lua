@@ -1,7 +1,7 @@
 -- Prosody IM
 -- Copyright (C) 2008-2010 Matthew Wild
 -- Copyright (C) 2008-2010 Waqas Hussain
--- 
+--
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
@@ -14,7 +14,8 @@ local tostring = tostring;
 local getstyle, getstring = require "util.termcolours".getstyle, require "util.termcolours".getstring;
 local do_pretty_printing = not os.getenv("WINDIR");
 
-module "logger"
+local _ENV = nil
+local _M = {}
 
 local logstyles = {};
 
@@ -25,7 +26,7 @@ if do_pretty_printing then
 	logstyles["error"] = getstyle("bold", "red");
 end
 
-function init(name)
+function _M.init(name)
 	--name = nil; -- While this line is not commented, will automatically fill in file/line number info
 	return 	function (level, message, ...)
 				if level == "debug" or level == "info" then return; end

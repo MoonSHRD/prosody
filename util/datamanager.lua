@@ -18,44 +18,53 @@ local os_remove = os.remove;
 local os_rename = os.rename;
 local tonumber = tonumber;
 local next = next;
+local type = type;
 local t_insert = table.insert;
 local t_concat = table.concat;
 local envloadfile = require"util.envload".envloadfile;
 local serialize = require "util.serialization".serialize;
-local path_separator = assert ( package.config:match ( "^([^\n]+)" ) , "package.config not in standard form" ) -- Extract directory seperator from package.config (an undocumented string that comes with lua)
 local lfs = require "lfs";
+-- Extract directory seperator from package.config (an undocumented string that comes with lua)
+local path_separator = assert ( package.config:match ( "^([^\n]+)" ) , "package.config not in standard form" )
+
 local prosody = prosody;
 
 local raw_mkdir = lfs.mkdir;
-local function fallocate(f, offset, len)
-	-- This assumes that current position == offset
-	local fake_data = (" "):rep(len);
-	local ok, msg = f:write(fake_data);
-	if not ok then
-		return ok, msg;
-	end
-	f:seek("set", offset);
-	return true;
-end;
+local atomic_append;
+local ENOENT = 2;
 pcall(function()
 	local pposix = require "util.pposix";
 	raw_mkdir = pposix.mkdir or raw_mkdir; -- Doesn't trample on umask
-	fallocate = pposix.fallocate or fallocate;
+	atomic_append = pposix.atomic_append;
+	ENOENT = pposix.ENOENT or ENOENT;
 end);
 
-module "datamanager"
+local _ENV = nil;
 
 ---- utils -----
 local encode, decode;
 do
-	local urlcodes = setmetatable({}, { __index = function (t, k) t[k] = char(tonumber("0x"..k)); return t[k]; end });
+	local urlcodes = setmetatable({}, { __index = function (t, k) t[k] = char(tonumber(k, 16)); return t[k]; end });
 
 	decode = function (s)
-		return s and (s:gsub("+", " "):gsub("%%([a-fA-F0-9][a-fA-F0-9])", urlcodes));
+		return s and (s:gsub("%%(%x%x)", urlcodes));
 	end
 
 	encode = function (s)
 		return s and (s:gsub("%W", function (c) return format("%%%02x", c:byte()); end));
+	end
+end
+
+if not atomic_append then
+	function atomic_append(f, data)
+		local pos = f:seek();
+		if not f:write(data) or not f:flush() then
+			f:seek("set", pos);
+			f:write((" "):rep(#data));
+			f:flush();
+			return nil, "write-failed";
+		end
+		return true;
 	end
 end
 
@@ -74,7 +83,7 @@ local callbacks = {};
 
 ------- API -------------
 
-function set_data_path(path)
+local function set_data_path(path)
 	log("debug", "Setting data path to: %s", path);
 	data_path = path;
 end
@@ -87,14 +96,14 @@ local function callback(username, host, datastore, data)
 
 	return username, host, datastore, data;
 end
-function add_callback(func)
+local function add_callback(func)
 	if not callbacks[func] then -- Would you really want to set the same callback more than once?
 		callbacks[func] = true;
 		callbacks[#callbacks+1] = func;
 		return true;
 	end
 end
-function remove_callback(func)
+local function remove_callback(func)
 	if callbacks[func] then
 		for i, f in ipairs(callbacks) do
 			if f == func then
@@ -106,7 +115,7 @@ function remove_callback(func)
 	end
 end
 
-function getpath(username, host, datastore, ext, create)
+local function getpath(username, host, datastore, ext, create)
 	ext = ext or "dat";
 	host = (host and encode(host)) or "_global";
 	username = username and encode(username);
@@ -119,18 +128,15 @@ function getpath(username, host, datastore, ext, create)
 	end
 end
 
-function load(username, host, datastore)
-	local data, ret = envloadfile(getpath(username, host, datastore), {});
+local function load(username, host, datastore)
+	local data, err, errno = envloadfile(getpath(username, host, datastore), {});
 	if not data then
-		local mode = lfs.attributes(getpath(username, host, datastore), "mode");
-		if not mode then
-			log("debug", "Assuming empty %s storage ('%s') for user: %s@%s", datastore, ret, username or "nil", host or "nil");
+		if errno == ENOENT then
+			-- No such file, ok to ignore
 			return nil;
-		else -- file exists, but can't be read
-			-- TODO more detailed error checking and logging?
-			log("error", "Failed to load %s storage ('%s') for user: %s@%s", datastore, ret, username or "nil", host or "nil");
-			return nil, "Error reading storage";
 		end
+		log("error", "Failed to load %s storage ('%s') for user: %s@%s", datastore, err, username or "nil", host or "nil");
+		return nil, "Error reading storage";
 	end
 
 	local success, ret = pcall(data);
@@ -143,25 +149,27 @@ end
 
 local function atomic_store(filename, data)
 	local scratch = filename.."~";
-	local f, ok, msg;
-	repeat
-		f, msg = io_open(scratch, "w");
-		if not f then break end
+	local f, ok, msg, errno;
 
-		ok, msg = f:write(data);
-		if not ok then break end
+	f, msg, errno = io_open(scratch, "w");
+	if not f then
+		return nil, msg;
+	end
 
-		ok, msg = f:close();
-		f = nil; -- no longer valid
-		if not ok then break end
+	ok, msg = f:write(data);
+	if not ok then
+		f:close();
+		os_remove(scratch);
+		return nil, msg;
+	end
 
-		return os_rename(scratch, filename);
-	until false;
+	ok, msg = f:close();
+	if not ok then
+		os_remove(scratch);
+		return nil, msg;
+	end
 
-	-- Cleanup
-	if f then f:close(); end
-	os_remove(scratch);
-	return nil, msg;
+	return os_rename(scratch, filename);
 end
 
 if prosody and prosody.platform ~= "posix" then
@@ -176,7 +184,7 @@ if prosody and prosody.platform ~= "posix" then
 	end
 end
 
-function store(username, host, datastore, data)
+local function store(username, host, datastore, data)
 	if not data then
 		data = {};
 	end
@@ -210,41 +218,58 @@ function store(username, host, datastore, data)
 	return true;
 end
 
-function list_append(username, host, datastore, data)
+-- Append a blob of data to a file
+local function append(username, host, datastore, ext, data)
+	if type(data) ~= "string" then return; end
+	local filename = getpath(username, host, datastore, ext, true);
+
+	local f = io_open(filename, "r+");
+	if not f then
+		return atomic_store(filename, data);
+		-- File did probably not exist, let's create it
+	end
+
+	local pos = f:seek("end");
+
+	local ok, msg = atomic_append(f, data);
+
+	if not ok then
+		f:close();
+		return ok, msg, "write";
+	end
+
+	ok, msg = f:close();
+	if not ok then
+		return ok, msg, "close";
+	end
+
+	return true, pos;
+end
+
+local function list_append(username, host, datastore, data)
 	if not data then return; end
 	if callback(username, host, datastore) == false then return true; end
 	-- save the datastore
-	local f, msg = io_open(getpath(username, host, datastore, "list", true), "r+");
-	if not f then
-		f, msg = io_open(getpath(username, host, datastore, "list", true), "w");
-	end
-	if not f then
-		log("error", "Unable to write to %s storage ('%s') for user: %s@%s", datastore, msg, username or "nil", host or "nil");
-		return;
-	end
-	local data = "item(" ..  serialize(data) .. ");\n";
-	local pos = f:seek("end");
-	local ok, msg = fallocate(f, pos, #data);
-	f:seek("set", pos);
-	if ok then
-		f:write(data);
-	else
-		log("error", "Unable to write to %s storage ('%s') for user: %s@%s", datastore, msg, username or "nil", host or "nil");
+
+	data = "item(" ..  serialize(data) .. ");\n";
+	local ok, msg, where = append(username, host, datastore, "list", data);
+	if not ok then
+		log("error", "Unable to write to %s storage ('%s' in %s) for user: %s@%s",
+			datastore, msg, where, username or "nil", host or "nil");
 		return ok, msg;
 	end
-	f:close();
 	return true;
 end
 
-function list_store(username, host, datastore, data)
+local function list_store(username, host, datastore, data)
 	if not data then
 		data = {};
 	end
 	if callback(username, host, datastore) == false then return true; end
 	-- save the datastore
 	local d = {};
-	for _, item in ipairs(data) do
-		d[#d+1] = "item(" .. serialize(item) .. ");\n";
+	for i, item in ipairs(data) do
+		d[i] = "item(" .. serialize(item) .. ");\n";
 	end
 	local ok, msg = atomic_store(getpath(username, host, datastore, "list", true), t_concat(d));
 	if not ok then
@@ -260,19 +285,16 @@ function list_store(username, host, datastore, data)
 	return true;
 end
 
-function list_load(username, host, datastore)
+local function list_load(username, host, datastore)
 	local items = {};
-	local data, ret = envloadfile(getpath(username, host, datastore, "list"), {item = function(i) t_insert(items, i); end});
+	local data, err, errno = envloadfile(getpath(username, host, datastore, "list"), {item = function(i) t_insert(items, i); end});
 	if not data then
-		local mode = lfs.attributes(getpath(username, host, datastore, "list"), "mode");
-		if not mode then
-			log("debug", "Assuming empty %s storage ('%s') for user: %s@%s", datastore, ret, username or "nil", host or "nil");
+		if errno == ENOENT then
+			-- No such file, ok to ignore
 			return nil;
-		else -- file exists, but can't be read
-			-- TODO more detailed error checking and logging?
-			log("error", "Failed to load %s storage ('%s') for user: %s@%s", datastore, ret, username or "nil", host or "nil");
-			return nil, "Error reading storage";
 		end
+		log("error", "Failed to load %s storage ('%s') for user: %s@%s", datastore, err, username or "nil", host or "nil");
+		return nil, "Error reading storage";
 	end
 
 	local success, ret = pcall(data);
@@ -288,7 +310,7 @@ local type_map = {
 	list = "list";
 }
 
-function users(host, store, typ)
+local function users(host, store, typ) -- luacheck: ignore 431/store
 	typ = type_map[typ or "keyval"];
 	local store_dir = format("%s/%s/%s", data_path, encode(host), store);
 
@@ -296,8 +318,8 @@ function users(host, store, typ)
 	if not mode then
 		return function() log("debug", "%s", err or (store_dir .. " does not exist")) end
 	end
-	local next, state = lfs.dir(store_dir);
-	return function(state)
+	local next, state = lfs.dir(store_dir); -- luacheck: ignore 431/next 431/state
+	return function(state) -- luacheck: ignore 431/state
 		for node in next, state do
 			local file, ext = node:match("^(.*)%.([dalist]+)$");
 			if file and ext == typ then
@@ -307,7 +329,7 @@ function users(host, store, typ)
 	end, state;
 end
 
-function stores(username, host, typ)
+local function stores(username, host, typ)
 	typ = type_map[typ or "keyval"];
 	local store_dir = format("%s/%s/", data_path, encode(host));
 
@@ -315,8 +337,8 @@ function stores(username, host, typ)
 	if not mode then
 		return function() log("debug", err or (store_dir .. " does not exist")) end
 	end
-	local next, state = lfs.dir(store_dir);
-	return function(state)
+	local next, state = lfs.dir(store_dir); -- luacheck: ignore 431/next 431/state
+	return function(state) -- luacheck: ignore 431/state
 		for node in next, state do
 			if not node:match"^%." then
 				if username == true then
@@ -324,9 +346,9 @@ function stores(username, host, typ)
 						return decode(node);
 					end
 				elseif username then
-					local store = decode(node)
-					if lfs.attributes(getpath(username, host, store, typ), "mode") then
-						return store;
+					local store_name = decode(node);
+					if lfs.attributes(getpath(username, host, store_name, typ), "mode") then
+						return store_name;
 					end
 				elseif lfs.attributes(node, "mode") == "file" then
 					local file, ext = node:match("^(.*)%.([dalist]+)$");
@@ -347,7 +369,7 @@ local function do_remove(path)
 	return true
 end
 
-function purge(username, host)
+local function purge(username, host)
 	local host_dir = format("%s/%s/", data_path, encode(host));
 	local ok, iter, state, var = pcall(lfs.dir, host_dir);
 	if not ok then
@@ -356,17 +378,32 @@ function purge(username, host)
 	local errs = {};
 	for file in iter, state, var do
 		if lfs.attributes(host_dir..file, "mode") == "directory" then
-			local store = decode(file);
-			local ok, err = do_remove(getpath(username, host, store));
+			local store_name = decode(file);
+			local ok, err = do_remove(getpath(username, host, store_name));
 			if not ok then errs[#errs+1] = err; end
 
-			local ok, err = do_remove(getpath(username, host, store, "list"));
+			local ok, err = do_remove(getpath(username, host, store_name, "list"));
 			if not ok then errs[#errs+1] = err; end
 		end
 	end
 	return #errs == 0, t_concat(errs, ", ");
 end
 
-_M.path_decode = decode;
-_M.path_encode = encode;
-return _M;
+return {
+	set_data_path = set_data_path;
+	add_callback = add_callback;
+	remove_callback = remove_callback;
+	getpath = getpath;
+	load = load;
+	store = store;
+	append_raw = append;
+	store_raw = atomic_store;
+	list_append = list_append;
+	list_store = list_store;
+	list_load = list_load;
+	users = users;
+	stores = stores;
+	purge = purge;
+	path_decode = decode;
+	path_encode = encode;
+};
