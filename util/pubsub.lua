@@ -17,6 +17,7 @@ local default_node_config = {
 	["persist_items"] = false;
 	["max_items"] = 20;
 	["access_model"] = "open";
+	["publish_model"] = "publishers";
 };
 local default_node_config_mt = { __index = default_node_config };
 
@@ -365,7 +366,19 @@ end
 
 function service:publish(node, actor, id, item)
 	-- Access checking
-	if not self:may(node, actor, "publish") then
+	local may_publish = false;
+
+	if self:may(node, actor, "publish") then
+		may_publish = true;
+	else
+		local node_obj = self.nodes[node];
+		local publish_model = node_obj and node_obj.config.publish_model;
+		if publish_model == "open"
+		or (publish_model == "subscribers" and node_obj.subscribers[actor]) then
+			may_publish = true;
+		end
+	end
+	if not may_publish then
 		return false, "forbidden";
 	end
 	--
@@ -565,6 +578,8 @@ function service:set_node_config(node, actor, new_config)
 		return false, "item-not-found";
 	end
 
+	setmetatable(new_config, {__index=self.node_defaults})
+
 	if self.config.check_node_config then
 		local ok = self.config.check_node_config(node, actor, new_config);
 		if not ok then
@@ -573,7 +588,7 @@ function service:set_node_config(node, actor, new_config)
 	end
 
 	local old_config = node_obj.config;
-	node_obj.config = setmetatable(new_config, {__index=self.node_defaults});
+	node_obj.config = new_config;
 
 	if self.config.nodestore then
 		local ok, err = save_node_to_store(self, node_obj);

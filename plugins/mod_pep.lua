@@ -81,12 +81,17 @@ local function nodestore(username)
 	function store:set(node, data)
 		if data then
 			-- Save the data without subscriptions
-			-- TODO Save explicit subscriptions maybe?
+			local subscribers = {};
+			for jid, sub in pairs(data.subscribers) do
+				if type(sub) ~= "table" or not sub.presence then
+					subscribers[jid] = sub;
+				end
+			end
 			data = {
 				name = data.name;
 				config = data.config;
 				affiliations = data.affiliations;
-				subscribers = {};
+				subscribers = subscribers;
 			};
 		end
 		return node_config:set(username, node, data);
@@ -353,7 +358,7 @@ local function update_subscriptions(recipient, service_name, nodes)
 	end
 
 	for node in nodes - current do
-		service:add_subscription(node, recipient, recipient);
+		service:add_subscription(node, recipient, recipient, { presence = true });
 		resend_last_item(recipient, node, service);
 	end
 

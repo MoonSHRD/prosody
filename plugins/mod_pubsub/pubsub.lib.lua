@@ -12,8 +12,6 @@ local xmlns_pubsub = "http://jabber.org/protocol/pubsub";
 local xmlns_pubsub_errors = "http://jabber.org/protocol/pubsub#errors";
 local xmlns_pubsub_owner = "http://jabber.org/protocol/pubsub#owner";
 
-local enable_publish_options = module:get_option_boolean("enable_publish_options", false);
-
 local _M = {};
 
 local handlers = {};
@@ -86,6 +84,16 @@ local node_config_form = dataform {
 	};
 	{
 		type = "list-single";
+		name = "pubsub#publish_model";
+		label = "Specify the publisher model";
+		options = {
+			{ value = "publishers" };
+			{ value = "subscribers" };
+			{ value = "open" };
+		};
+	};
+	{
+		type = "list-single";
 		name = "pubsub#notification_type";
 		label = "Specify the delivery style for notifications";
 		options = {
@@ -131,6 +139,7 @@ local config_field_map = {
 	persist_items = "pubsub#persist_items";
 	notification_type = "pubsub#notification_type";
 	access_model = "pubsub#access_model";
+	publish_model = "pubsub#publish_model";
 };
 local reverse_config_field_map = {};
 for k, v in pairs(config_field_map) do reverse_config_field_map[v] = k; end
@@ -144,6 +153,7 @@ local function config_to_xep0060(node_config)
 		["pubsub#persist_items"] = node_config["persist_items"];
 		["pubsub#notification_type"] = node_config["notification_type"];
 		["pubsub#access_model"] = node_config["access_model"];
+		["pubsub#publish_model"] = node_config["publish_model"];
 	}
 end
 
@@ -152,6 +162,9 @@ local function config_from_xep0060(config, strict)
 	for config_field, config_value in pairs(config) do
 		local mapped_name = reverse_config_field_map[config_field];
 		if mapped_name then
+			-- FIXME: The intention is to add "subtype" support to
+			-- util.dataforms, which will remove the need for this
+			-- ugly hack
 			if mapped_name == "max_items" then
 				config_value = tonumber(config_value);
 			end
@@ -183,7 +196,7 @@ local service_method_feature_map = {
 	get_items = { "retrieve-items" };
 	get_subscriptions = { "retrieve-subscriptions" };
 	node_defaults = { "retrieve-default" };
-	publish = { "publish", "multi-items", enable_publish_options and "publish-options" or nil };
+	publish = { "publish", "multi-items", "publish-options" };
 	purge = { "purge-nodes" };
 	retract = { "delete-items", "retract-items" };
 	set_node_config = { "config-node" };
@@ -548,7 +561,7 @@ function handlers.set_publish(origin, stanza, publish, service)
 		return true;
 	end
 	local publish_options = stanza.tags[1]:get_child("publish-options");
-	if enable_publish_options and publish_options then
+	if publish_options then
 		-- Ensure that the node configuration matches the values in publish-options
 		local publish_options_form = publish_options:get_child("x", "jabber:x:data");
 		local required_config = config_from_xep0060(node_config_form:data(publish_options_form), true);
@@ -642,18 +655,12 @@ function handlers.owner_get_configure(origin, stanza, config, service)
 		return true;
 	end
 
-	if not service:may(node, stanza.attr.from, "configure") then
-		origin.send(pubsub_error_reply(stanza, "forbidden"));
+	local ok, node_config = service:get_node_config(node, stanza.attr.from);
+	if not ok then
+		origin.send(pubsub_error_reply(stanza, node_config));
 		return true;
 	end
 
-	local node_obj = service.nodes[node];
-	if not node_obj then
-		origin.send(pubsub_error_reply(stanza, "item-not-found"));
-		return true;
-	end
-
-	local node_config = node_obj.config;
 	local pubsub_form_data = config_to_xep0060(node_config);
 	local reply = st.reply(stanza)
 		:tag("pubsub", { xmlns = xmlns_pubsub_owner })
@@ -678,7 +685,12 @@ function handlers.owner_set_configure(origin, stanza, config, service)
 		origin.send(st.error_reply(stanza, "modify", "bad-request", "Missing dataform"));
 		return true;
 	end
-	local form_data, err = node_config_form:data(config_form);
+	local ok, old_config = service:get_node_config(node, stanza.attr.from);
+	if not ok then
+		origin.send(pubsub_error_reply(stanza, old_config));
+		return true;
+	end
+	local form_data, err = node_config_form:data(config_form, old_config);
 	if not form_data then
 		origin.send(st.error_reply(stanza, "modify", "bad-request", err));
 		return true;
