@@ -15,8 +15,8 @@ local set = require "util.set";
 local new_multitable = require "util.multitable".new;
 local api = require "core.moduleapi"; -- Module API container
 
-local hosts = hosts;
 local prosody = prosody;
+local hosts = prosody.hosts;
 
 local xpcall = xpcall;
 local setmetatable, rawget = setmetatable, rawget;
@@ -38,6 +38,7 @@ local component_inheritable_modules = {"tls", "saslauth", "dialback", "iq", "s2s
 local _G = _G;
 
 local _ENV = nil;
+-- luacheck: std none
 
 local load_modules_for_host, load, unload, reload, get_module, get_items;
 local get_modules, is_loaded, module_has_method, call_module_method;
@@ -45,8 +46,8 @@ local get_modules, is_loaded, module_has_method, call_module_method;
 -- [host] = { [module] = module_env }
 local modulemap = { ["*"] = {} };
 
--- Load modules when a host is activated
-function load_modules_for_host(host)
+-- Get the list of modules to be loaded on a host
+local function get_modules_for_host(host)
 	local component = config.get(host, "component_module");
 
 	local global_modules_enabled = config.get("*", "modules_enabled");
@@ -70,8 +71,16 @@ function load_modules_for_host(host)
 		modules:add("admin_telnet");
 	end
 
-	if component then
-		load(host, component);
+	return modules, component;
+end
+
+-- Load modules when a host is activated
+function load_modules_for_host(host)
+	local modules, component_module = get_modules_for_host(host);
+
+	-- Ensure component module is loaded first
+	if component_module then
+		load(host, component_module);
 	end
 	for module in modules do
 		load(host, module);
@@ -323,6 +332,7 @@ function call_module_method(module, method, ...)
 end
 
 return {
+	get_modules_for_host = get_modules_for_host;
 	load_modules_for_host = load_modules_for_host;
 	load = load;
 	unload = unload;

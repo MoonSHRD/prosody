@@ -95,6 +95,8 @@ local function session_close(session, reason)
 		session.send(st.stanza("close", { xmlns = xmlns_framing }));
 		function session.send() return false; end
 
+		-- luacheck: ignore 422/reason
+		-- FIXME reason should be handled in common place
 		local reason = (reason and (reason.name or reason.text or reason.condition)) or reason;
 		session.log("debug", "c2s stream for %s closed: %s", session.full_jid or ("<"..session.ip..">"), reason or "session closed");
 
@@ -256,6 +258,10 @@ function handle_request(event)
 
 	local session = sessions[conn];
 
+	-- Use upstream IP if a HTTP proxy was used
+	-- See mod_http and #540
+	session.ip = request.ip;
+
 	session.secure = consider_websocket_secure or session.secure;
 	session.websocket_request = request;
 
@@ -311,16 +317,17 @@ end
 
 module:hook("c2s-read-timeout", keepalive, -0.9);
 
+module:depends("http");
+module:provides("http", {
+	name = "websocket";
+	default_path = "xmpp-websocket";
+	route = {
+		["GET"] = handle_request;
+		["GET /"] = handle_request;
+	};
+});
+
 function module.add_host(module)
-	module:depends("http");
-	module:provides("http", {
-		name = "websocket";
-		default_path = "xmpp-websocket";
-		route = {
-			["GET"] = handle_request;
-			["GET /"] = handle_request;
-		};
-	});
 	module:hook("c2s-read-timeout", keepalive, -0.9);
 
 	if cross_domain ~= true then

@@ -15,9 +15,9 @@ local sessionmanager = require "core.sessionmanager";
 local st = require "util.stanza";
 local sm_new_session, sm_destroy_session = sessionmanager.new_session, sessionmanager.destroy_session;
 local uuid_generate = require "util.uuid".generate;
+local runner = require "util.async".runner;
 
-local xpcall, tostring, type = xpcall, tostring, type;
-local traceback = debug.traceback;
+local tostring, type = tostring, type;
 
 local xmlns_xmpp_streams = "urn:ietf:params:xml:ns:xmpp-streams";
 
@@ -28,6 +28,7 @@ local stream_close_timeout = module:get_option_number("c2s_close_timeout", 5);
 local opt_keepalives = module:get_option_boolean("c2s_tcp_keepalives", module:get_option_boolean("tcp_keepalives", true));
 
 local measure_connections = module:measure("connections", "amount");
+local measure_ipv6 = module:measure("ipv6", "amount");
 
 local sessions = module:shared("sessions");
 local core_process_stanza = prosody.core_process_stanza;
@@ -35,13 +36,19 @@ local hosts = prosody.hosts;
 
 local stream_callbacks = { default_ns = "jabber:client" };
 local listener = {};
+local runner_callbacks = {};
 
 module:hook("stats-update", function ()
 	local count = 0;
-	for _ in pairs(sessions) do
+	local ipv6 = 0;
+	for _, session in pairs(sessions) do
 		count = count + 1;
+		if session.ip and session.ip:match(":") then
+			ipv6 = ipv6 + 1;
+		end
 	end
 	measure_connections(count);
+	measure_ipv6(ipv6);
 end);
 
 --- Stream events handlers
@@ -64,7 +71,7 @@ function stream_callbacks.streamopened(session, attr)
 	end
 	session.version = tonumber(attr.version) or 0;
 	session.streamid = uuid_generate();
-	(session.log or session)("debug", "Client sent opening <stream:stream> to %s", session.host);
+	(session.log or log)("debug", "Client sent opening <stream:stream> to %s", session.host);
 
 	if not hosts[session.host] or not hosts[session.host].modules.c2s then
 		-- We don't serve this host...
@@ -134,12 +141,9 @@ function stream_callbacks.error(session, error, data)
 	end
 end
 
-local function handleerr(err) log("error", "Traceback[c2s]: %s", traceback(tostring(err), 2)); end
 function stream_callbacks.handlestanza(session, stanza)
 	stanza = session.filter("stanzas/in", stanza);
-	if stanza then
-		return xpcall(function () return core_process_stanza(session, stanza) end, handleerr);
-	end
+	session.thread:run(stanza);
 end
 
 --- Session methods
@@ -220,6 +224,18 @@ module:hook_global("user-password-changed", function(event)
 	end
 end, 200);
 
+function runner_callbacks:ready()
+	self.data.conn:resume();
+end
+
+function runner_callbacks:waiting()
+	self.data.conn:pause();
+end
+
+function runner_callbacks:error(err)
+	(self.data.log or log)("error", "Traceback[c2s]: %s", err);
+end
+
 --- Port listener
 function listener.onconnect(conn)
 	local session = sm_new_session(conn);
@@ -255,6 +271,10 @@ function listener.onconnect(conn)
 		session.notopen = true;
 		session.stream:reset();
 	end
+
+	session.thread = runner(function (stanza)
+		core_process_stanza(session, stanza);
+	end, runner_callbacks, session);
 
 	local filter = session.filter;
 	function session.data(data)

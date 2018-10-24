@@ -17,14 +17,22 @@
 
 
 #if defined(__linux__)
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #else
+#ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
 #endif
+#endif
 #if defined(__APPLE__)
+#ifndef _DARWIN_C_SOURCE
 #define _DARWIN_C_SOURCE
 #endif
+#endif
+#ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
+#endif
 
 #include <stdlib.h>
 #include <math.h>
@@ -55,7 +63,7 @@
 #include <linux/falloc.h>
 #endif
 
-#if !defined(WITHOUT_MALLINFO) && defined(__linux__)
+#if !defined(WITHOUT_MALLINFO) && defined(__linux__) && defined(__GLIBC__)
 #include <malloc.h>
 #define WITH_MALLINFO
 #endif
@@ -107,14 +115,10 @@ static int lc_daemonize(lua_State *L) {
 		return 2;
 	}
 
-	/* Close stdin, stdout, stderr */
-	close(0);
-	close(1);
-	close(2);
 	/* Make sure accidental use of FDs 0, 1, 2 don't cause weirdness */
-	open("/dev/null", O_RDONLY);
-	open("/dev/null", O_WRONLY);
-	open("/dev/null", O_WRONLY);
+	freopen("/dev/null", "r", stdin);
+	freopen("/dev/null", "w", stdout);
+	freopen("/dev/null", "w", stderr);
 
 	/* Final fork, use it wisely */
 	if(fork()) {
@@ -238,6 +242,7 @@ int lc_syslog_log(lua_State *L) {
 }
 
 int lc_syslog_close(lua_State *L) {
+	(void)L;
 	closelog();
 
 	if(syslog_ident) {
@@ -552,6 +557,7 @@ rlim_t arg_to_rlimit(lua_State *L, int idx, rlim_t current) {
 			if(strcmp(lua_tostring(L, idx), "unlimited") == 0) {
 				return RLIM_INFINITY;
 			}
+			return luaL_argerror(L, idx, "unexpected type");
 
 		case LUA_TNUMBER:
 			return lua_tointeger(L, idx);
@@ -650,6 +656,7 @@ int lc_getrlimit(lua_State *L) {
 }
 
 int lc_abort(lua_State *L) {
+	(void)L;
 	abort();
 	return 0;
 }

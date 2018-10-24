@@ -5,69 +5,76 @@
 -- COPYING file in the source package for more information.
 --
 
+local net = require "util.net";
+local hex = require "util.hex";
+
 local ip_methods = {};
-local ip_mt = { __index = function (ip, key) return (ip_methods[key])(ip); end,
-		__tostring = function (ip) return ip.addr; end,
-		__eq = function (ipA, ipB) return ipA.addr == ipB.addr; end};
-local hex2bits = { ["0"] = "0000", ["1"] = "0001", ["2"] = "0010", ["3"] = "0011", ["4"] = "0100", ["5"] = "0101", ["6"] = "0110", ["7"] = "0111", ["8"] = "1000", ["9"] = "1001", ["A"] = "1010", ["B"] = "1011", ["C"] = "1100", ["D"] = "1101", ["E"] = "1110", ["F"] = "1111" };
+
+local ip_mt = {
+	__index = function (ip, key)
+		local method = ip_methods[key];
+		if not method then return nil; end
+		local ret = method(ip);
+		ip[key] = ret;
+		return ret;
+	end,
+	__tostring = function (ip) return ip.addr; end,
+	__eq = function (ipA, ipB) return ipA.packed == ipB.packed; end
+};
+
+local hex2bits = {
+	["0"] = "0000", ["1"] = "0001", ["2"] = "0010", ["3"] = "0011",
+	["4"] = "0100", ["5"] = "0101", ["6"] = "0110", ["7"] = "0111",
+	["8"] = "1000", ["9"] = "1001", ["A"] = "1010", ["B"] = "1011",
+	["C"] = "1100", ["D"] = "1101", ["E"] = "1110", ["F"] = "1111",
+};
 
 local function new_ip(ipStr, proto)
-	if not proto then
-		local sep = ipStr:match("^%x+(.)");
-		if sep == ":" or (not(sep) and ipStr:sub(1,1) == ":") then
-			proto = "IPv6"
-		elseif sep == "." then
-			proto = "IPv4"
-		end
-		if not proto then
-			return nil, "invalid address";
-		end
-	elseif proto ~= "IPv4" and proto ~= "IPv6" then
-		return nil, "invalid protocol";
-	end
 	local zone;
-	if proto == "IPv6" and ipStr:find('%', 1, true) then
+	if (not proto or proto == "IPv6") and ipStr:find('%', 1, true) then
 		ipStr, zone = ipStr:match("^(.-)%%(.*)");
 	end
-	if proto == "IPv6" and ipStr:find('.', 1, true) then
-		local changed;
-		ipStr, changed = ipStr:gsub(":(%d+)%.(%d+)%.(%d+)%.(%d+)$", function(a,b,c,d)
-			return (":%04X:%04X"):format(a*256+b,c*256+d);
-		end);
-		if changed ~= 1 then return nil, "invalid-address"; end
+
+	local packed, err = net.pton(ipStr);
+	if not packed then return packed, err end
+	if proto == "IPv6" and #packed ~= 16 then
+		return nil, "invalid-ipv6";
+	elseif proto == "IPv4" and #packed ~= 4 then
+		return nil, "invalid-ipv4";
+	elseif not proto then
+		if #packed == 16 then
+			proto = "IPv6";
+		elseif #packed == 4 then
+			proto = "IPv4";
+		else
+			return nil, "unknown protocol";
+		end
+	elseif proto ~= "IPv6" and proto ~= "IPv4" then
+		return nil, "invalid protocol";
 	end
 
-	return setmetatable({ addr = ipStr, proto = proto, zone = zone }, ip_mt);
+	return setmetatable({ addr = ipStr, packed = packed, proto = proto, zone = zone }, ip_mt);
 end
 
-local function toBits(ip)
-	local result = "";
-	local fields = {};
+function ip_methods:normal()
+	return net.ntop(self.packed);
+end
+
+function ip_methods.bits(ip)
+	return hex.to(ip.packed):upper():gsub(".", hex2bits);
+end
+
+function ip_methods.bits_full(ip)
 	if ip.proto == "IPv4" then
 		ip = ip.toV4mapped;
 	end
-	ip = (ip.addr):upper();
-	ip:gsub("([^:]*):?", function (c) fields[#fields + 1] = c end);
-	if not ip:match(":$") then fields[#fields] = nil; end
-	for i, field in ipairs(fields) do
-		if field:len() == 0 and i ~= 1 and i ~= #fields then
-			for _ = 1, 16 * (9 - #fields) do
-				result = result .. "0";
-			end
-		else
-			for _ = 1, 4 - field:len() do
-				result = result .. "0000";
-			end
-			for j = 1, field:len() do
-				result = result .. hex2bits[field:sub(j, j)];
-			end
-		end
-	end
-	return result;
+	return ip.bits;
 end
 
+local match;
+
 local function commonPrefixLength(ipA, ipB)
-	ipA, ipB = toBits(ipA), toBits(ipB);
+	ipA, ipB = ipA.bits_full, ipB.bits_full;
 	for i = 1, 128 do
 		if ipA:sub(i,i) ~= ipB:sub(i,i) then
 			return i-1;
@@ -76,56 +83,60 @@ local function commonPrefixLength(ipA, ipB)
 	return 128;
 end
 
+-- Instantiate once
+local loopback = new_ip("::1");
+local loopback4 = new_ip("127.0.0.0");
+local sixtofour = new_ip("2002::");
+local teredo = new_ip("2001::");
+local linklocal = new_ip("fe80::");
+local linklocal4 = new_ip("169.254.0.0");
+local uniquelocal = new_ip("fc00::");
+local sitelocal = new_ip("fec0::");
+local sixbone = new_ip("3ffe::");
+local defaultunicast = new_ip("::");
+local multicast = new_ip("ff00::");
+local ipv6mapped = new_ip("::ffff:0:0");
+
 local function v4scope(ip)
-	local fields = {};
-	ip:gsub("([^.]*).?", function (c) fields[#fields + 1] = tonumber(c) end);
-	-- Loopback:
-	if fields[1] == 127 then
+	if match(ip, loopback4, 8) then
 		return 0x2;
-	-- Link-local unicast:
-	elseif fields[1] == 169 and fields[2] == 254 then
+	elseif match(ip, linklocal4) then
 		return 0x2;
-	-- Global unicast:
-	else
+	else -- Global unicast
 		return 0xE;
 	end
 end
 
 local function v6scope(ip)
-	-- Loopback:
-	if ip:match("^[0:]*1$") then
+	if ip == loopback then
 		return 0x2;
-	-- Link-local unicast:
-	elseif ip:match("^[Ff][Ee][89ABab]") then
+	elseif match(ip, linklocal, 10) then
 		return 0x2;
-	-- Site-local unicast:
-	elseif ip:match("^[Ff][Ee][CcDdEeFf]") then
+	elseif match(ip, sitelocal, 10) then
 		return 0x5;
-	-- Multicast:
-	elseif ip:match("^[Ff][Ff]") then
-		return tonumber("0x"..ip:sub(4,4));
-	-- Global unicast:
-	else
+	elseif match(ip, multicast, 10) then
+		return ip.packed:byte(2) % 0x10;
+	else -- Global unicast
 		return 0xE;
 	end
 end
 
 local function label(ip)
-	if commonPrefixLength(ip, new_ip("::1", "IPv6")) == 128 then
+	if ip == loopback then
 		return 0;
-	elseif commonPrefixLength(ip, new_ip("2002::", "IPv6")) >= 16 then
+	elseif match(ip, sixtofour, 16) then
 		return 2;
-	elseif commonPrefixLength(ip, new_ip("2001::", "IPv6")) >= 32 then
+	elseif match(ip, teredo, 32) then
 		return 5;
-	elseif commonPrefixLength(ip, new_ip("fc00::", "IPv6")) >= 7 then
+	elseif match(ip, uniquelocal, 7) then
 		return 13;
-	elseif commonPrefixLength(ip, new_ip("fec0::", "IPv6")) >= 10 then
+	elseif match(ip, sitelocal, 10) then
 		return 11;
-	elseif commonPrefixLength(ip, new_ip("3ffe::", "IPv6")) >= 16 then
+	elseif match(ip, sixbone, 16) then
 		return 12;
-	elseif commonPrefixLength(ip, new_ip("::", "IPv6")) >= 96 then
+	elseif match(ip, defaultunicast, 96) then
 		return 3;
-	elseif commonPrefixLength(ip, new_ip("::ffff:0:0", "IPv6")) >= 96 then
+	elseif match(ip, ipv6mapped, 96) then
 		return 4;
 	else
 		return 1;
@@ -133,91 +144,67 @@ local function label(ip)
 end
 
 local function precedence(ip)
-	if commonPrefixLength(ip, new_ip("::1", "IPv6")) == 128 then
+	if ip == loopback then
 		return 50;
-	elseif commonPrefixLength(ip, new_ip("2002::", "IPv6")) >= 16 then
+	elseif match(ip, sixtofour, 16) then
 		return 30;
-	elseif commonPrefixLength(ip, new_ip("2001::", "IPv6")) >= 32 then
+	elseif match(ip, teredo, 32) then
 		return 5;
-	elseif commonPrefixLength(ip, new_ip("fc00::", "IPv6")) >= 7 then
+	elseif match(ip, uniquelocal, 7) then
 		return 3;
-	elseif commonPrefixLength(ip, new_ip("fec0::", "IPv6")) >= 10 then
+	elseif match(ip, sitelocal, 10) then
 		return 1;
-	elseif commonPrefixLength(ip, new_ip("3ffe::", "IPv6")) >= 16 then
+	elseif match(ip, sixbone, 16) then
 		return 1;
-	elseif commonPrefixLength(ip, new_ip("::", "IPv6")) >= 96 then
+	elseif match(ip, defaultunicast, 96) then
 		return 1;
-	elseif commonPrefixLength(ip, new_ip("::ffff:0:0", "IPv6")) >= 96 then
+	elseif match(ip, ipv6mapped, 96) then
 		return 35;
 	else
 		return 40;
 	end
 end
 
-local function toV4mapped(ip)
-	local fields = {};
-	local ret = "::ffff:";
-	ip:gsub("([^.]*).?", function (c) fields[#fields + 1] = tonumber(c) end);
-	ret = ret .. ("%02x"):format(fields[1]);
-	ret = ret .. ("%02x"):format(fields[2]);
-	ret = ret .. ":"
-	ret = ret .. ("%02x"):format(fields[3]);
-	ret = ret .. ("%02x"):format(fields[4]);
-	return new_ip(ret, "IPv6");
-end
-
 function ip_methods:toV4mapped()
 	if self.proto ~= "IPv4" then return nil, "No IPv4 address" end
-	local value = toV4mapped(self.addr);
-	self.toV4mapped = value;
+	local value = new_ip("::ffff:" .. self.normal);
 	return value;
 end
 
 function ip_methods:label()
-	local value;
 	if self.proto == "IPv4" then
-		value = label(self.toV4mapped);
+		return label(self.toV4mapped);
 	else
-		value = label(self);
+		return label(self);
 	end
-	self.label = value;
-	return value;
 end
 
 function ip_methods:precedence()
-	local value;
 	if self.proto == "IPv4" then
-		value = precedence(self.toV4mapped);
+		return precedence(self.toV4mapped);
 	else
-		value = precedence(self);
+		return precedence(self);
 	end
-	self.precedence = value;
-	return value;
 end
 
 function ip_methods:scope()
-	local value;
 	if self.proto == "IPv4" then
-		value = v4scope(self.addr);
+		return v4scope(self);
 	else
-		value = v6scope(self.addr);
+		return v6scope(self);
 	end
-	self.scope = value;
-	return value;
 end
+
+local rfc1918_8 = new_ip("10.0.0.0");
+local rfc1918_12 = new_ip("172.16.0.0");
+local rfc1918_16 = new_ip("192.168.0.0");
+local rfc6598 = new_ip("100.64.0.0");
 
 function ip_methods:private()
 	local private = self.scope ~= 0xE;
 	if not private and self.proto == "IPv4" then
-		local ip = self.addr;
-		local fields = {};
-		ip:gsub("([^.]*).?", function (c) fields[#fields + 1] = tonumber(c) end);
-		if fields[1] == 127 or fields[1] == 10 or (fields[1] == 192 and fields[2] == 168)
-		or (fields[1] == 172 and (fields[2] >= 16 or fields[2] <= 32)) then
-			private = true;
-		end
+		return match(self, rfc1918_8, 8) or match(self, rfc1918_12, 12) or match(self, rfc1918_16) or match(self, rfc6598, 10);
 	end
-	self.private = private;
 	return private;
 end
 
@@ -231,15 +218,26 @@ local function parse_cidr(cidr)
 	return new_ip(cidr), bits;
 end
 
-local function match(ipA, ipB, bits)
-	local common_bits = commonPrefixLength(ipA, ipB);
-	if bits and ipB.proto == "IPv4" then
-		common_bits = common_bits - 96; -- v6 mapped addresses always share these bits
+function match(ipA, ipB, bits)
+	if not bits or bits >= 128 or ipB.proto == "IPv4" and bits >= 32 then
+		return ipA == ipB;
+	elseif bits < 1 then
+		return true;
 	end
-	return common_bits >= (bits or 128);
+	if ipA.proto ~= ipB.proto then
+		if ipA.proto == "IPv4" then
+			ipA = ipA.toV4mapped;
+		elseif ipB.proto == "IPv4" then
+			ipB = ipB.toV4mapped;
+			bits = bits + (128 - 32);
+		end
+	end
+	return ipA.bits:sub(1, bits) == ipB.bits:sub(1, bits);
 end
 
-return {new_ip = new_ip,
+return {
+	new_ip = new_ip,
 	commonPrefixLength = commonPrefixLength,
 	parse_cidr = parse_cidr,
-	match=match};
+	match = match,
+};

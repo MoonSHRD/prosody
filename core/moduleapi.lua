@@ -6,7 +6,6 @@
 -- COPYING file in the source package for more information.
 --
 
-local config = require "core.configmanager";
 local array = require "util.array";
 local set = require "util.set";
 local it = require "util.iterators";
@@ -14,15 +13,15 @@ local logger = require "util.logger";
 local pluginloader = require "util.pluginloader";
 local timer = require "util.timer";
 local resolve_relative_path = require"util.paths".resolve_relative_path;
-local measure = require "core.statsmanager".measure;
 local st = require "util.stanza";
 
 local t_insert, t_remove, t_concat = table.insert, table.remove, table.concat;
 local error, setmetatable, type = error, setmetatable, type;
 local ipairs, pairs, select = ipairs, pairs, select;
-local unpack = table.unpack or unpack; --luacheck: ignore 113
 local tonumber, tostring = tonumber, tostring;
 local require = require;
+local pack = table.pack or function(...) return {n=select("#",...), ...}; end -- table.pack is only in 5.2
+local unpack = table.unpack or unpack; --luacheck: ignore 113 -- renamed in 5.2
 
 local prosody = prosody;
 local hosts = prosody.hosts;
@@ -69,20 +68,6 @@ function api:add_identity(category, identity_type, name)
 end
 function api:add_extension(data)
 	self:add_item("extension", data);
-end
-function api:has_feature(xmlns)
-	for _, feature in ipairs(self:get_host_items("feature")) do
-		if feature == xmlns then return true; end
-	end
-	return false;
-end
-function api:has_identity(category, identity_type, name)
-	for _, id in ipairs(self:get_host_items("identity")) do
-		if id.category == category and id.type == identity_type and id.name == name then
-			return true;
-		end
-	end
-	return false;
 end
 
 function api:fire_event(...)
@@ -160,6 +145,9 @@ function api:depends(name)
 			end
 		end);
 	end
+	if self:get_option_inherited_set("modules_disabled", {}):contains(name) then
+		self:log("warn", "Loading prerequisite mod_%s despite it being disabled", name);
+	end
 	local mod = modulemanager.get_module(self.host, name) or modulemanager.get_module("*", name);
 	if mod and mod.module.host == "*" and self.host ~= "*"
 	and modulemanager.module_has_method(mod, "add_host") then
@@ -176,36 +164,36 @@ function api:depends(name)
 	return mod;
 end
 
--- Returns one or more shared tables at the specified virtual paths
--- Intentionally does not allow the table at a path to be _set_, it
--- is auto-created if it does not exist.
-function api:shared(...)
-	if not self.shared_data then self.shared_data = {}; end
-	local paths = { n = select("#", ...), ... };
-	local data_array = {};
-	local default_path_components = { self.host, self.name };
-	for i = 1, paths.n do
-		local path = paths[i];
-		if path:sub(1,1) ~= "/" then -- Prepend default components
-			local n_components = select(2, path:gsub("/", "%1"));
-			path = (n_components<#default_path_components and "/" or "")
-				..t_concat(default_path_components, "/", 1, #default_path_components-n_components).."/"..path;
-		end
-		local shared = shared_data[path];
-		if not shared then
-			shared = {};
-			if path:match("%-cache$") then
-				setmetatable(shared, { __mode = "kv" });
-			end
-			shared_data[path] = shared;
-		end
-		t_insert(data_array, shared);
-		self.shared_data[path] = shared;
+local function get_shared_table_from_path(module, tables, path)
+	if path:sub(1,1) ~= "/" then -- Prepend default components
+		local default_path_components = { module.host, module.name };
+		local n_components = select(2, path:gsub("/", "%1"));
+		path = (n_components<#default_path_components and "/" or "")
+			..t_concat(default_path_components, "/", 1, #default_path_components-n_components).."/"..path;
 	end
-	return unpack(data_array);
+	local shared = tables[path];
+	if not shared then
+		shared = {};
+		if path:match("%-cache$") then
+			setmetatable(shared, { __mode = "kv" });
+		end
+		tables[path] = shared;
+	end
+	return shared;
+end
+
+-- Returns a shared table at the specified virtual path
+-- Intentionally does not allow the table to be _set_, it
+-- is auto-created if it does not exist.
+function api:shared(path)
+	if not self.shared_data then self.shared_data = {}; end
+	local shared = get_shared_table_from_path(self, shared_data, path);
+	self.shared_data[path] = shared;
+	return shared;
 end
 
 function api:get_option(name, default_value)
+	local config = require "core.configmanager";
 	local value = config.get(self.host, name);
 	if value == nil then
 		value = default_value;
@@ -299,7 +287,7 @@ end
 
 function api:get_option_path(name, default, parent)
 	if parent == nil then
-		parent = parent or self:get_directory();
+		parent = self:get_directory();
 	elseif prosody.paths[parent] then
 		parent = prosody.paths[parent];
 	end
@@ -377,15 +365,33 @@ function api:broadcast(jids, stanza, iter)
 	for jid in (iter or it.values)(jids) do
 		local new_stanza = st.clone(stanza);
 		new_stanza.attr.to = jid;
-		core_post_stanza(hosts[self.host], new_stanza);
+		self:send(new_stanza);
 	end
 end
 
-function api:add_timer(delay, callback)
-	return timer.add_task(delay, function (t)
-		if self.loaded == false then return; end
-		return callback(t);
-	end);
+local timer_methods = { }
+local timer_mt = {
+	__index = timer_methods;
+}
+function timer_methods:stop( )
+	timer.stop(self.id);
+end
+timer_methods.disarm = timer_methods.stop
+function timer_methods:reschedule(delay)
+	timer.reschedule(self.id, delay)
+end
+
+local function timer_callback(now, id, t) --luacheck: ignore 212/id
+	if t.module_env.loaded == false then return; end
+	return t.callback(now, unpack(t, 1, t.n));
+end
+
+function api:add_timer(delay, callback, ...)
+	local t = pack(...)
+	t.module_env = self;
+	t.callback = callback;
+	t.id = timer.add_task(delay, timer_callback, t);
+	return setmetatable(t, timer_mt);
 end
 
 local path_sep = package.config:sub(1,1);
@@ -403,6 +409,7 @@ function api:open_store(name, store_type)
 end
 
 function api:measure(name, stat_type)
+	local measure = require "core.statsmanager".measure;
 	return measure(stat_type, "/"..self.host.."/mod_"..self.name.."/"..name);
 end
 

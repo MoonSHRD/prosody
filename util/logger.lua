@@ -8,8 +8,11 @@
 -- luacheck: ignore 213/level
 
 local pairs = pairs;
+local ipairs = ipairs;
+local require = require;
 
 local _ENV = nil;
+-- luacheck: std none
 
 local level_sinks = {};
 
@@ -67,10 +70,21 @@ local function add_level_sink(level, sink_function)
 	end
 end
 
+local function add_simple_sink(simple_sink_function, levels)
+	local format = require "util.format".format;
+	local function sink_function(name, level, msg, ...)
+		return simple_sink_function(name, level, format(msg, ...));
+	end
+	for _, level in ipairs(levels or {"debug", "info", "warn", "error"}) do
+		add_level_sink(level, sink_function);
+	end
+end
+
 return {
 	init = init;
 	make_logger = make_logger;
 	reset = reset;
 	add_level_sink = add_level_sink;
+	add_simple_sink = add_simple_sink;
 	new = make_logger;
 };

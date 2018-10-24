@@ -5,6 +5,7 @@
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
+-- luacheck: ignore 212/self
 
 module:set_global();
 
@@ -13,11 +14,11 @@ local modulemanager = require "core.modulemanager";
 local s2smanager = require "core.s2smanager";
 local portmanager = require "core.portmanager";
 local helpers = require "util.helpers";
+local server = require "net.server";
 
 local _G = _G;
 
 local prosody = _G.prosody;
-local hosts = prosody.hosts;
 
 local console_listener = { default_port = 5582; default_mode = "*a"; interface = "127.0.0.1" };
 
@@ -34,8 +35,8 @@ local commands = module:shared("commands")
 local def_env = module:shared("env");
 local default_env_mt = { __index = def_env };
 
-local function redirect_output(_G, session)
-	local env = setmetatable({ print = session.print }, { __index = function (t, k) return rawget(_G, k); end });
+local function redirect_output(target, session)
+	local env = setmetatable({ print = session.print }, { __index = function (_, k) return rawget(target, k); end });
 	env.dofile = function(name)
 		local f, err = envloadfile(name, env);
 		if not f then return f, err; end
@@ -163,7 +164,7 @@ function console_listener.onreadtimeout(conn)
 	end
 end
 
-function console_listener.ondisconnect(conn, err)
+function console_listener.ondisconnect(conn, err) -- luacheck: ignore 212/err
 	local session = sessions[conn];
 	if session then
 		session.disconnect();
@@ -361,7 +362,7 @@ function def_env.module:load(name, hosts, config)
 	hosts = get_hosts_set(hosts);
 
 	-- Load the module for each host
-	local ok, err, count, mod = true, nil, 0, nil;
+	local ok, err, count, mod = true, nil, 0;
 	for host in hosts do
 		if (not modulemanager.is_loaded(host, name)) then
 			mod, err = modulemanager.load(host, name, config);
@@ -404,12 +405,14 @@ function def_env.module:unload(name, hosts)
 	return ok, (ok and "Module unloaded from "..count.." host"..(count ~= 1 and "s" or "")) or ("Last error: "..tostring(err));
 end
 
+local function _sort_hosts(a, b)
+	if a == "*" then return true
+	elseif b == "*" then return false
+	else return a < b; end
+end
+
 function def_env.module:reload(name, hosts)
-	hosts = array.collect(get_hosts_set(hosts, name)):sort(function (a, b)
-		if a == "*" then return true
-		elseif b == "*" then return false
-		else return a < b; end
-	end);
+	hosts = array.collect(get_hosts_set(hosts, name)):sort(_sort_hosts)
 
 	-- Reload the module for each host
 	local ok, err, count = true, nil, 0;
@@ -567,7 +570,7 @@ local function show_c2s(callback)
 	end);
 end
 
-function def_env.c2s:count(match_jid)
+function def_env.c2s:count()
 	return true, "Total: "..  iterators.count(values(module:shared"/*/c2s/sessions")) .." clients";
 end
 
@@ -651,6 +654,7 @@ function def_env.s2s:show(match_jid, annotate)
 
 		if (not match_jid) or remotehost:match(match_jid) or localhost:match(match_jid) then
 			table.insert(s2s_list, sess_lines);
+			-- luacheck: ignore 421/print
 			local print = function (s) table.insert(sess_lines, "        "..s); end
 			if session.sendq then
 				print("There are "..#session.sendq.." queued outgoing stanzas for this connection");
@@ -830,7 +834,7 @@ function def_env.s2s:close(from, to)
 
 	local match_id;
 	if from and not to then
-		match_id, from = from;
+		match_id, from = from, nil;
 	elseif not to then
 		return false, "Syntax: s2s:close('from', 'to') - Closes all s2s sessions from 'from' to 'to'";
 	elseif from == to then
@@ -875,9 +879,9 @@ function def_env.host:list()
 	local print = self.session.print;
 	local i = 0;
 	local type;
-	for host in values(array.collect(keys(prosody.hosts)):sort()) do
+	for host, host_session in iterators.sorted_pairs(prosody.hosts) do
 		i = i + 1;
-		type = hosts[host].type;
+		type = host_session.type;
 		if type == "local" then
 			print(host);
 		else
@@ -896,14 +900,11 @@ def_env.port = {};
 function def_env.port:list()
 	local print = self.session.print;
 	local services = portmanager.get_active_services().data;
-	local ordered_services, n_ports = {}, 0;
-	for service, interfaces in pairs(services) do
-		table.insert(ordered_services, service);
-	end
-	table.sort(ordered_services);
-	for _, service in ipairs(ordered_services) do
+	local n_services, n_ports = 0, 0;
+	for service, interfaces in iterators.sorted_pairs(services) do
+		n_services = n_services + 1;
 		local ports_list = {};
-		for interface, ports in pairs(services[service]) do
+		for interface, ports in pairs(interfaces) do
 			for port in pairs(ports) do
 				table.insert(ports_list, "["..interface.."]:"..port);
 			end
@@ -911,14 +912,14 @@ function def_env.port:list()
 		n_ports = n_ports + #ports_list;
 		print(service..": "..table.concat(ports_list, ", "));
 	end
-	return true, #ordered_services.." services listening on "..n_ports.." ports";
+	return true, n_services.." services listening on "..n_ports.." ports";
 end
 
 function def_env.port:close(close_port, close_interface)
 	close_port = assert(tonumber(close_port), "Invalid port number");
 	local n_closed = 0;
 	local services = portmanager.get_active_services().data;
-	for service, interfaces in pairs(services) do
+	for service, interfaces in pairs(services) do -- luacheck: ignore 213
 		for interface, ports in pairs(interfaces) do
 			if not close_interface or close_interface == interface then
 				if ports[close_port] then
@@ -947,22 +948,23 @@ local console_room_mt = {
 
 local function check_muc(jid)
 	local room_name, host = jid_split(jid);
-	if not hosts[host] then
+	if not prosody.hosts[host] then
 		return nil, "No such host: "..host;
-	elseif not hosts[host].modules.muc then
+	elseif not prosody.hosts[host].modules.muc then
 		return nil, "Host '"..host.."' is not a MUC service";
 	end
 	return room_name, host;
 end
 
-function def_env.muc:create(room_jid)
+function def_env.muc:create(room_jid, config)
 	local room_name, host = check_muc(room_jid);
 	if not room_name then
 		return room_name, host;
 	end
 	if not room_name then return nil, host end
-	if hosts[host].modules.muc.rooms[room_jid] then return nil, "Room exists already" end
-	return hosts[host].modules.muc.create_room(room_jid);
+	if config ~= nil and type(config) ~= "table" then return nil, "Config must be a table"; end
+	if prosody.hosts[host].modules.muc.get_room_from_jid(room_jid) then return nil, "Room exists already" end
+	return prosody.hosts[host].modules.muc.create_room(room_jid, config);
 end
 
 function def_env.muc:room(room_jid)
@@ -970,7 +972,7 @@ function def_env.muc:room(room_jid)
 	if not room_name then
 		return room_name, host;
 	end
-	local room_obj = hosts[host].modules.muc.rooms[room_jid];
+	local room_obj = prosody.hosts[host].modules.muc.get_room_from_jid(room_jid);
 	if not room_obj then
 		return nil, "No such room: "..room_jid;
 	end
@@ -978,14 +980,14 @@ function def_env.muc:room(room_jid)
 end
 
 function def_env.muc:list(host)
-	local host_session = hosts[host];
+	local host_session = prosody.hosts[host];
 	if not host_session or not host_session.modules.muc then
 		return nil, "Please supply the address of a local MUC component";
 	end
 	local print = self.session.print;
 	local c = 0;
-	for name in keys(host_session.modules.muc.rooms) do
-		print(name);
+	for room in host_session.modules.muc.each_room() do
+		print(room.jid);
 		c = c + 1;
 	end
 	return true, c.." rooms";
@@ -996,7 +998,7 @@ local um = require"core.usermanager";
 def_env.user = {};
 function def_env.user:create(jid, password)
 	local username, host = jid_split(jid);
-	if not hosts[host] then
+	if not prosody.hosts[host] then
 		return nil, "No such host: "..host;
 	elseif um.user_exists(username, host) then
 		return nil, "User exists";
@@ -1011,7 +1013,7 @@ end
 
 function def_env.user:delete(jid)
 	local username, host = jid_split(jid);
-	if not hosts[host] then
+	if not prosody.hosts[host] then
 		return nil, "No such host: "..host;
 	elseif not um.user_exists(username, host) then
 		return nil, "No such user";
@@ -1026,7 +1028,7 @@ end
 
 function def_env.user:password(jid, password)
 	local username, host = jid_split(jid);
-	if not hosts[host] then
+	if not prosody.hosts[host] then
 		return nil, "No such host: "..host;
 	elseif not um.user_exists(username, host) then
 		return nil, "No such user";
@@ -1042,7 +1044,7 @@ end
 function def_env.user:list(host, pat)
 	if not host then
 		return nil, "No host given";
-	elseif not hosts[host] then
+	elseif not prosody.hosts[host] then
 		return nil, "No such host";
 	end
 	local print = self.session.print;
@@ -1061,9 +1063,9 @@ def_env.xmpp = {};
 
 local st = require "util.stanza";
 function def_env.xmpp:ping(localhost, remotehost)
-	if hosts[localhost] then
+	if prosody.hosts[localhost] then
 		module:send(st.iq{ from=localhost, to=remotehost, type="get", id="ping" }
-				:tag("ping", {xmlns="urn:xmpp:ping"}), hosts[localhost]);
+				:tag("ping", {xmlns="urn:xmpp:ping"}), prosody.hosts[localhost]);
 		return true, "Sent ping";
 	else
 		return nil, "No such host";
@@ -1141,21 +1143,373 @@ end
 function def_env.debug:events(host, event)
 	local events_obj;
 	if host and host ~= "*" then
-		if not hosts[host] then
+		if host == "http" then
+			events_obj = require "net.http.server"._events;
+		elseif not prosody.hosts[host] then
 			return false, "Unknown host: "..host;
+		else
+			events_obj = prosody.hosts[host].events;
 		end
-		events_obj = hosts[host].events;
 	else
 		events_obj = prosody.events;
 	end
 	return true, helpers.show_events(events_obj, event);
 end
 
+function def_env.debug:timers()
+	local socket = require "socket";
+	local print = self.session.print;
+	local add_task = require"util.timer".add_task;
+	local h, params = add_task.h, add_task.params;
+	if h then
+		print("-- util.timer");
+		for i, id in ipairs(h.ids) do
+			if not params[id] then
+				print(os.date("%F %T", h.priorities[i]), h.items[id]);
+			elseif not params[id].callback then
+				print(os.date("%F %T", h.priorities[i]), h.items[id], unpack(params[id]));
+			else
+				print(os.date("%F %T", h.priorities[i]), params[id].callback, unpack(params[id]));
+			end
+		end
+	end
+	if server.event_base then
+		local count = 0;
+		for _, v in pairs(debug.getregistry()) do
+			if type(v) == "function" and v.callback and v.callback == add_task._on_timer then
+				count = count + 1;
+			end
+		end
+		print(count .. " libevent callbacks");
+	end
+	if h then
+		local next_time = h:peek();
+		if next_time then
+			return true, os.date("Next event at %F %T (in %%.6fs)", next_time):format(next_time - socket.gettime());
+		end
+	end
+	return true;
+end
+
+-- COMPAT: debug:timers() was timer:info() for some time in trunk
+def_env.timer = { info = def_env.debug.timers };
+
 module:hook("server-stopping", function(event)
-	for conn, session in pairs(sessions) do
+	for _, session in pairs(sessions) do
 		session.print("Shutting down: "..(event.reason or "unknown reason"));
 	end
 end);
+
+def_env.stats = {};
+
+local function format_stat(type, value, ref_value)
+	ref_value = ref_value or value;
+	--do return tostring(value) end
+	if type == "duration" then
+		if ref_value < 0.001 then
+			return ("%d µs"):format(value*1000000);
+		elseif ref_value < 0.9 then
+			return ("%0.2f ms"):format(value*1000);
+		end
+		return ("%0.2f"):format(value);
+	elseif type == "size" then
+		if ref_value > 1048576 then
+			return ("%d MB"):format(value/1048576);
+		elseif ref_value > 1024 then
+			return ("%d KB"):format(value/1024);
+		end
+		return ("%d bytes"):format(value);
+	elseif type == "rate" then
+		if ref_value < 0.9 then
+			return ("%0.2f/min"):format(value*60);
+		end
+		return ("%0.2f/sec"):format(value);
+	end
+	return tostring(value);
+end
+
+local stats_methods = {};
+function stats_methods:bounds(_lower, _upper)
+	for _, stat_info in ipairs(self) do
+		local data = stat_info[4];
+		if data then
+			local lower = _lower or data.min;
+			local upper = _upper or data.max;
+			local new_data = {
+				min = lower;
+				max = upper;
+				samples = {};
+				sample_count = 0;
+				count = data.count;
+				units = data.units;
+			};
+			local sum = 0;
+			for _, v in ipairs(data.samples) do
+				if v > upper then
+					break;
+				elseif v>=lower then
+					table.insert(new_data.samples, v);
+					sum = sum + v;
+				end
+			end
+			new_data.sample_count = #new_data.samples;
+			stat_info[4] = new_data;
+			stat_info[3] = sum/new_data.sample_count;
+		end
+	end
+	return self;
+end
+
+function stats_methods:trim(lower, upper)
+	upper = upper or (100-lower);
+	local statistics = require "util.statistics";
+	for _, stat_info in ipairs(self) do
+		-- Strip outliers
+		local data = stat_info[4];
+		if data then
+			local new_data = {
+				min = statistics.get_percentile(data, lower);
+				max = statistics.get_percentile(data, upper);
+				samples = {};
+				sample_count = 0;
+				count = data.count;
+				units = data.units;
+			};
+			local sum = 0;
+			for _, v in ipairs(data.samples) do
+				if v > new_data.max then
+					break;
+				elseif v>=new_data.min then
+					table.insert(new_data.samples, v);
+					sum = sum + v;
+				end
+			end
+			new_data.sample_count = #new_data.samples;
+			stat_info[4] = new_data;
+			stat_info[3] = sum/new_data.sample_count;
+		end
+	end
+	return self;
+end
+
+function stats_methods:max(upper)
+	return self:bounds(nil, upper);
+end
+
+function stats_methods:min(lower)
+	return self:bounds(lower, nil);
+end
+
+function stats_methods:summary()
+	local statistics = require "util.statistics";
+	for _, stat_info in ipairs(self) do
+		local type, value, data = stat_info[2], stat_info[3], stat_info[4];
+		if data and data.samples then
+			table.insert(stat_info.output, string.format("Count: %d (%d captured)",
+				data.count,
+				data.sample_count
+			));
+			table.insert(stat_info.output, string.format("Min: %s  Mean: %s  Max: %s",
+				format_stat(type, data.min),
+				format_stat(type, value),
+				format_stat(type, data.max)
+			));
+			table.insert(stat_info.output, string.format("Q1: %s  Median: %s  Q3: %s",
+				format_stat(type, statistics.get_percentile(data, 25)),
+				format_stat(type, statistics.get_percentile(data, 50)),
+				format_stat(type, statistics.get_percentile(data, 75))
+			));
+		end
+	end
+	return self;
+end
+
+function stats_methods:cfgraph()
+	for _, stat_info in ipairs(self) do
+		local name, type, value, data = unpack(stat_info, 1, 4);
+		local function print(s)
+			table.insert(stat_info.output, s);
+		end
+
+		if data and data.sample_count and data.sample_count > 0 then
+			local raw_histogram = require "util.statistics".get_histogram(data);
+
+			local graph_width, graph_height = 50, 10;
+			local eighth_chars = "   ▁▂▃▄▅▆▇█";
+
+			local range = data.max - data.min;
+
+			if range > 0 then
+				local x_scaling = #raw_histogram/graph_width;
+				local histogram = {};
+				for i = 1, graph_width do
+					histogram[i] = math.max(raw_histogram[i*x_scaling-1] or 0, raw_histogram[i*x_scaling] or 0);
+				end
+
+				print("");
+				print(("_"):rep(52)..format_stat(type, data.max));
+				for row = graph_height, 1, -1 do
+					local row_chars = {};
+					local min_eighths, max_eighths = 8, 0;
+					for i = 1, #histogram do
+						local char_eighths = math.ceil(math.max(math.min((graph_height/(data.max/histogram[i]))-(row-1), 1), 0)*8);
+						if char_eighths < min_eighths then
+							min_eighths = char_eighths;
+						end
+						if char_eighths > max_eighths then
+							max_eighths = char_eighths;
+						end
+						if char_eighths == 0 then
+							row_chars[i] = "-";
+						else
+							local char = eighth_chars:sub(char_eighths*3+1, char_eighths*3+3);
+							row_chars[i] = char;
+						end
+					end
+					print(table.concat(row_chars).."|-"..format_stat(type, data.max/(graph_height/(row-0.5))));
+				end
+				print(("\\    "):rep(11));
+				local x_labels = {};
+				for i = 1, 11 do
+					local s = ("%-4s"):format((i-1)*10);
+					if #s > 4 then
+						s = s:sub(1, 3).."…";
+					end
+					x_labels[i] = s;
+				end
+				print(" "..table.concat(x_labels, " "));
+				local units = "%";
+				local margin = math.floor((graph_width-#units)/2);
+				print((" "):rep(margin)..units);
+			else
+				print("[range too small to graph]");
+			end
+			print("");
+		end
+	end
+	return self;
+end
+
+function stats_methods:histogram()
+	for _, stat_info in ipairs(self) do
+		local name, type, value, data = unpack(stat_info, 1, 4);
+		local function print(s)
+			table.insert(stat_info.output, s);
+		end
+
+		if not data then
+			print("[no data]");
+			return self;
+		elseif not data.sample_count then
+			print("[not a sampled metric type]");
+			return self;
+		end
+
+		local graph_width, graph_height = 50, 10;
+		local eighth_chars = "   ▁▂▃▄▅▆▇█";
+
+		local range = data.max - data.min;
+
+		if range > 0 then
+			local n_buckets = graph_width;
+
+			local histogram = {};
+			for i = 1, n_buckets do
+				histogram[i] = 0;
+			end
+			local max_bin_samples = 0;
+			for _, d in ipairs(data.samples) do
+				local bucket = math.floor(1+(n_buckets-1)/(range/(d-data.min)));
+				histogram[bucket] = histogram[bucket] + 1;
+				if histogram[bucket] > max_bin_samples then
+					max_bin_samples = histogram[bucket];
+				end
+			end
+
+			print("");
+			print(("_"):rep(52)..max_bin_samples);
+			for row = graph_height, 1, -1 do
+				local row_chars = {};
+				local min_eighths, max_eighths = 8, 0;
+				for i = 1, #histogram do
+					local char_eighths = math.ceil(math.max(math.min((graph_height/(max_bin_samples/histogram[i]))-(row-1), 1), 0)*8);
+					if char_eighths < min_eighths then
+						min_eighths = char_eighths;
+					end
+					if char_eighths > max_eighths then
+						max_eighths = char_eighths;
+					end
+					if char_eighths == 0 then
+						row_chars[i] = "-";
+					else
+						local char = eighth_chars:sub(char_eighths*3+1, char_eighths*3+3);
+						row_chars[i] = char;
+					end
+				end
+				print(table.concat(row_chars).."|-"..math.ceil((max_bin_samples/graph_height)*(row-0.5)));
+			end
+			print(("\\    "):rep(11));
+			local x_labels = {};
+			for i = 1, 11 do
+				local s = ("%-4s"):format(format_stat(type, data.min+range*i/11, data.min):match("^%S+"));
+				if #s > 4 then
+					s = s:sub(1, 3).."…";
+				end
+				x_labels[i] = s;
+			end
+			print(" "..table.concat(x_labels, " "));
+			local units = format_stat(type, data.min):match("%s+(.+)$") or data.units or "";
+			local margin = math.floor((graph_width-#units)/2);
+			print((" "):rep(margin)..units);
+		else
+			print("[range too small to graph]");
+		end
+		print("");
+	end
+	return self;
+end
+
+local function stats_tostring(stats)
+	local print = stats.session.print;
+	for _, stat_info in ipairs(stats) do
+		if #stat_info.output > 0 then
+			print("\n#"..stat_info[1]);
+			print("");
+			for _, v in ipairs(stat_info.output) do
+				print(v);
+			end
+			print("");
+		else
+			print(("%-50s %s"):format(stat_info[1], format_stat(stat_info[2], stat_info[3])));
+		end
+	end
+	return #stats.." statistics displayed";
+end
+
+local stats_mt = {__index = stats_methods, __tostring = stats_tostring }
+local function new_stats_context(self)
+	return setmetatable({ session = self.session, stats = true }, stats_mt);
+end
+
+function def_env.stats:show(filter)
+	local stats, changed, extra = require "core.statsmanager".get_stats();
+	local available, displayed = 0, 0;
+	local displayed_stats = new_stats_context(self);
+	for name, value in pairs(stats) do
+		available = available + 1;
+		if not filter or name:match(filter) then
+			displayed = displayed + 1;
+			local type = name:match(":(%a+)$");
+			table.insert(displayed_stats, {
+				name, type, value, extra[name];
+				output = {};
+			});
+		end
+	end
+	return displayed_stats;
+end
+
+
 
 -------------
 
@@ -1175,7 +1529,7 @@ function printbanner(session)
 	if option == "short" or option == "full" then
 	session.print("Welcome to the Prosody administration console. For a list of commands, type: help");
 	session.print("You may find more help on using this console in our online documentation at ");
-	session.print("http://prosody.im/doc/console\n");
+	session.print("https://prosody.im/doc/console\n");
 	end
 	if option ~= "short" and option ~= "full" and option ~= "graphic" then
 		session.print(option);

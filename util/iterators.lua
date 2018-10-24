@@ -12,8 +12,13 @@ local it = {};
 
 local t_insert = table.insert;
 local select, next = select, next;
-local unpack = table.unpack or unpack; --luacheck: ignore 113
-local pack = table.pack or function (...) return { n = select("#", ...), ... }; end
+local unpack = table.unpack or unpack; --luacheck: ignore 113 143
+local pack = table.pack or function (...) return { n = select("#", ...), ... }; end -- luacheck: ignore 143
+local type = type;
+local table, setmetatable = table, setmetatable;
+
+local _ENV = nil;
+--luacheck: std none
 
 -- Reverse an iterator
 function it.reverse(f, s, var)
@@ -172,6 +177,19 @@ function it.to_array(f, s, var)
 	return t;
 end
 
+function it.sorted_pairs(t, sort_func)
+	local keys = it.to_array(it.keys(t));
+	table.sort(keys, sort_func);
+	local i = 0;
+	return function ()
+		i = i + 1;
+		local key = keys[i];
+		if key ~= nil then
+			return key, t[key];
+		end
+	end;
+end
+
 -- Treat the return of an iterator as key,value pairs,
 -- and build a table
 function it.to_table(f, s, var)
@@ -182,6 +200,47 @@ function it.to_table(f, s, var)
 		t[var] = var2;
 	end
 	return t;
+end
+
+local function _join_iter(j_s, j_var)
+	local iterators, current_idx = j_s[1], j_s[2];
+	local f, s, var = unpack(iterators[current_idx], 1, 3);
+	if j_var ~= nil then
+		var = j_var;
+	end
+	local ret = pack(f(s, var));
+	local var1 = ret[1];
+	if var1 == nil then
+		-- End of this iterator, advance to next
+		if current_idx == #iterators then
+			-- No more iterators, return nil
+			return;
+		end
+		j_s[2] = current_idx + 1;
+		return _join_iter(j_s);
+	end
+	return unpack(ret, 1, ret.n);
+end
+local join_methods = {};
+local join_mt = {
+	__index = join_methods;
+	__call = function (t, s, var) --luacheck: ignore 212/t
+		return _join_iter(s, var);
+	end;
+};
+
+function join_methods:append(f, s, var)
+	table.insert(self, { f, s, var });
+	return self, { self, 1 };
+end
+
+function join_methods:prepend(f, s, var)
+	table.insert(self, { f, s, var }, 1);
+	return self, { self, 1 };
+end
+
+function it.join(f, s, var)
+	return setmetatable({ {f, s, var} }, join_mt);
 end
 
 return it;

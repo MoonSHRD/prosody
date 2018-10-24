@@ -89,6 +89,7 @@ function serve(opts)
 	if type(opts) ~= "table" then -- assume path string
 		opts = { path = opts };
 	end
+	-- luacheck: ignore 431
 	local base_path = opts.path;
 	local dir_indices = opts.index_files or dir_indices;
 	local directory_index = opts.directory_index;
@@ -127,9 +128,9 @@ function serve(opts)
 			data = data.data;
 		elseif attr.mode == "directory" and path then
 			if full_path:sub(-1) ~= "/" then
-				local path = { is_absolute = true, is_directory = true };
-				for dir in orig_path:gmatch("[^/]+") do path[#path+1]=dir; end
-				response_headers.location = build_path(path);
+				local dir_path = { is_absolute = true, is_directory = true };
+				for dir in orig_path:gmatch("[^/]+") do dir_path[#dir_path+1]=dir; end
+				response_headers.location = build_path(dir_path);
 				return 301;
 			end
 			for i=1,#dir_indices do

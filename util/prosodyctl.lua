@@ -24,8 +24,6 @@ local io, os = io, os;
 local print = print;
 local tonumber = tonumber;
 
-local CFG_SOURCEDIR = _G.CFG_SOURCEDIR;
-
 local _G = _G;
 local prosody = prosody;
 
@@ -66,7 +64,10 @@ local function getline()
 end
 
 local function getpass()
-	local stty_ret = os.execute("stty -echo 2>/dev/null");
+	local stty_ret, _, status_code = os.execute("stty -echo 2>/dev/null");
+	if status_code then -- COMPAT w/ Lua 5.1
+		stty_ret = status_code;
+	end
 	if stty_ret ~= 0 then
 		io.write("\027[08m"); -- ANSI 'hidden' text attribute
 	end
@@ -189,8 +190,8 @@ local function getpid()
 
 	pidfile = config.resolve_relative_path(prosody.paths.data, pidfile);
 
-	local modules_enabled = set.new(config.get("*", "modules_disabled"));
-	if prosody.platform ~= "posix" or modules_enabled:contains("posix") then
+	local modules_disabled = set.new(config.get("*", "modules_disabled"));
+	if prosody.platform ~= "posix" or modules_disabled:contains("posix") then
 		return false, "no-posix";
 	end
 
@@ -228,7 +229,7 @@ local function isrunning()
 	return true, signal.kill(pid, 0) == 0;
 end
 
-local function start()
+local function start(source_dir)
 	local ok, ret = isrunning();
 	if not ok then
 		return ok, ret;
@@ -236,10 +237,10 @@ local function start()
 	if ret then
 		return false, "already-running";
 	end
-	if not CFG_SOURCEDIR then
+	if not source_dir then
 		os.execute("./prosody");
 	else
-		os.execute(CFG_SOURCEDIR.."/../../bin/prosody");
+		os.execute(source_dir.."/../../bin/prosody");
 	end
 	return true;
 end

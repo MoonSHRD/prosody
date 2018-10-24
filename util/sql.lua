@@ -1,11 +1,10 @@
 
 local setmetatable, getmetatable = setmetatable, getmetatable;
-local ipairs, unpack, select = ipairs, table.unpack or unpack, select; --luacheck: ignore 113
-local tonumber, tostring = tonumber, tostring;
+local ipairs, unpack, select = ipairs, table.unpack or unpack, select; --luacheck: ignore 113 143
+local tostring = tostring;
 local type = type;
 local assert, pcall, xpcall, debug_traceback = assert, pcall, xpcall, debug.traceback;
 local t_concat = table.concat;
-local s_char = string.char;
 local log = require "util.logger".init("sql");
 
 local DBI = require "DBI";
@@ -15,6 +14,7 @@ DBI.Drivers();
 local build_url = require "socket.url".build;
 
 local _ENV = nil;
+-- luacheck: std none
 
 local column_mt = {};
 local table_mt = {};
@@ -58,9 +58,6 @@ table_mt.__index = {};
 function table_mt.__index:create(engine)
 	return engine:_create_table(self);
 end
-function table_mt:__call(...)
-	-- TODO
-end
 function column_mt:__tostring()
 	return 'Column{ name="'..self.name..'", type="'..self.type..'" }'
 end
@@ -69,31 +66,6 @@ function index_mt:__tostring()
 	for i=1,#self do s = s..', "'..self[i]:gsub("[\\\"]", "\\%1")..'"'; end
 	return s..' }';
 --	return 'Index{ name="'..self.name..'", type="'..self.type..'" }'
-end
-
-local function urldecode(s) return s and (s:gsub("%%(%x%x)", function (c) return s_char(tonumber(c,16)); end)); end
-local function parse_url(url)
-	local scheme, secondpart, database = url:match("^([%w%+]+)://([^/]*)/?(.*)");
-	assert(scheme, "Invalid URL format");
-	local username, password, host, port;
-	local authpart, hostpart = secondpart:match("([^@]+)@([^@+])");
-	if not authpart then hostpart = secondpart; end
-	if authpart then
-		username, password = authpart:match("([^:]*):(.*)");
-		username = username or authpart;
-		password = password and urldecode(password);
-	end
-	if hostpart then
-		host, port = hostpart:match("([^:]*):(.*)");
-		host = host or hostpart;
-		port = port and assert(tonumber(port), "Invalid URL format");
-	end
-	return {
-		scheme = scheme:lower();
-		username = username; password = password;
-		host = host; port = port;
-		database = #database > 0 and database or nil;
-	};
 end
 
 local engine = {};
@@ -123,7 +95,7 @@ function engine:connect()
 	end
 	return true;
 end
-function engine:onconnect()
+function engine:onconnect() -- luacheck: ignore 212/self
 	-- Override from create_engine()
 end
 
@@ -148,6 +120,7 @@ function engine:execute(sql, ...)
 		prepared[sql] = stmt;
 	end
 
+	-- luacheck: ignore 411/success
 	local success, err = stmt:execute(...);
 	if not success then return success, err; end
 	return stmt;
@@ -161,14 +134,14 @@ local result_mt = { __index = {
 local function debugquery(where, sql, ...)
 	local i = 0; local a = {...}
 	sql = sql:gsub("\n?\t+", " ");
-	log("debug", "[%s] %s", where, sql:gsub("%?", function ()
+	log("debug", "[%s] %s", where, (sql:gsub("%?", function ()
 		i = i + 1;
 		local v = a[i];
 		if type(v) == "string" then
 			v = ("'%s'"):format(v:gsub("'", "''"));
 		end
 		return tostring(v);
-	end));
+	end)));
 end
 
 function engine:execute_query(sql, ...)
@@ -335,7 +308,12 @@ function engine:set_encoding() -- to UTF-8
 	local charset = "utf8";
 	if driver == "MySQL" then
 		self:transaction(function()
-			for row in self:select"SELECT \"CHARACTER_SET_NAME\" FROM \"information_schema\".\"CHARACTER_SETS\" WHERE \"CHARACTER_SET_NAME\" LIKE 'utf8%' ORDER BY MAXLEN DESC LIMIT 1;" do
+			for row in self:select[[
+				SELECT "CHARACTER_SET_NAME"
+				FROM "information_schema"."CHARACTER_SETS"
+				WHERE "CHARACTER_SET_NAME" LIKE 'utf8%'
+				ORDER BY MAXLEN DESC LIMIT 1;
+				]] do
 				charset = row and row[1] or charset;
 			end
 		end);
@@ -379,7 +357,7 @@ local function db2uri(params)
 	};
 end
 
-local function create_engine(self, params, onconnect)
+local function create_engine(_, params, onconnect)
 	return setmetatable({ url = db2uri(params), params = params, onconnect = onconnect }, engine_mt);
 end
 

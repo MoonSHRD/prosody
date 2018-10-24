@@ -8,14 +8,17 @@
 
 local setmetatable = setmetatable;
 local ipairs = ipairs;
-local tostring, type, next = tostring, type, next;
+local type, next = type, next;
+local tonumber = tonumber;
 local t_concat = table.concat;
 local st = require "util.stanza";
 local jid_prep = require "util.jid".prep;
 
 local _ENV = nil;
+-- luacheck: std none
 
 local xmlns_forms = 'jabber:x:data';
+local xmlns_validate = 'http://jabber.org/protocol/xdata-validate';
 
 local form_t = {};
 local form_mt = { __index = form_t };
@@ -25,21 +28,76 @@ local function new(layout)
 end
 
 function form_t.form(layout, data, formtype)
-	local form = st.stanza("x", { xmlns = xmlns_forms, type = formtype or "form" });
-	if layout.title then
-		form:tag("title"):text(layout.title):up();
+	if not formtype then formtype = "form" end
+	local form = st.stanza("x", { xmlns = xmlns_forms, type = formtype });
+	if formtype == "cancel" then
+		return form;
 	end
-	if layout.instructions then
-		form:tag("instructions"):text(layout.instructions):up();
+	if formtype ~= "submit" then
+		if layout.title then
+			form:tag("title"):text(layout.title):up();
+		end
+		if layout.instructions then
+			form:tag("instructions"):text(layout.instructions):up();
+		end
 	end
 	for _, field in ipairs(layout) do
 		local field_type = field.type or "text-single";
 		-- Add field tag
-		form:tag("field", { type = field_type, var = field.name, label = field.label });
+		form:tag("field", { type = field_type, var = field.var or field.name, label = formtype ~= "submit" and field.label or nil });
 
-		local value = (data and data[field.name]) or field.value;
+		if formtype ~= "submit" then
+			if field.desc then
+				form:text_tag("desc", field.desc);
+			end
+		end
 
-		if value then
+		if formtype == "form" and field.datatype then
+			form:tag("validate", { xmlns = xmlns_validate, datatype = field.datatype });
+			-- <basic/> assumed
+			form:up();
+		end
+
+
+		local value = field.value;
+		local options = field.options;
+
+		if data and data[field.name] ~= nil then
+			value = data[field.name];
+
+			if formtype == "form" and type(value) == "table"
+				and (field_type == "list-single" or field_type == "list-multi") then
+				-- Allow passing dynamically generated options as values
+				options, value = value, nil;
+			end
+		end
+
+		if formtype == "form" and options then
+			local defaults = {};
+			for _, val in ipairs(options) do
+				if type(val) == "table" then
+					form:tag("option", { label = val.label }):tag("value"):text(val.value):up():up();
+					if val.default then
+						defaults[#defaults+1] = val.value;
+					end
+				else
+					form:tag("option", { label= val }):tag("value"):text(val):up():up();
+				end
+			end
+			if not value then
+				if field_type == "list-single" then
+					value = defaults[1];
+				elseif field_type == "list-multi" then
+					value = defaults;
+				end
+			end
+		end
+
+		if value ~= nil then
+			if type(value) == "number" then
+				-- TODO validate that this is ok somehow, eg check field.datatype
+				value = ("%g"):format(value);
+			end
 			-- Add value, depending on type
 			if field_type == "hidden" then
 				if type(value) == "table" then
@@ -48,7 +106,7 @@ function form_t.form(layout, data, formtype)
 						:add_child(value)
 						:up();
 				else
-					form:tag("value"):text(tostring(value)):up();
+					form:tag("value"):text(value):up();
 				end
 			elseif field_type == "boolean" then
 				form:tag("value"):text((value and "1") or "0"):up();
@@ -68,40 +126,10 @@ function form_t.form(layout, data, formtype)
 					form:tag("value"):text(line):up();
 				end
 			elseif field_type == "list-single" then
-				if formtype ~= "result" then
-					local has_default = false;
-					for _, val in ipairs(field.options or value) do
-						if type(val) == "table" then
-							form:tag("option", { label = val.label }):tag("value"):text(val.value):up():up();
-							if value == val.value or val.default and (not has_default) then
-								form:tag("value"):text(val.value):up();
-								has_default = true;
-							end
-						else
-							form:tag("option", { label= val }):tag("value"):text(tostring(val)):up():up();
-						end
-					end
-				end
-				if (field.options or formtype == "result") and value then
-					form:tag("value"):text(value):up();
-				end
+				form:tag("value"):text(value):up();
 			elseif field_type == "list-multi" then
-				if formtype ~= "result" then
-					for _, val in ipairs(field.options or value) do
-						if type(val) == "table" then
-							form:tag("option", { label = val.label }):tag("value"):text(val.value):up():up();
-							if not field.options and val.default then
-								form:tag("value"):text(val.value):up();
-							end
-						else
-							form:tag("option", { label= val }):tag("value"):text(tostring(val)):up():up();
-						end
-					end
-				end
-				if (field.options or formtype == "result") and value then
-					for _, val in ipairs(value) do
-						form:tag("value"):text(val):up();
-					end
+				for _, val in ipairs(value) do
+					form:tag("value"):text(val):up();
 				end
 			end
 		end
@@ -115,7 +143,7 @@ function form_t.form(layout, data, formtype)
 			form:up();
 		end
 
-		if field.required then
+		if formtype == "form" and field.required then
 			form:tag("required"):up();
 		end
 
@@ -126,8 +154,9 @@ function form_t.form(layout, data, formtype)
 end
 
 local field_readers = {};
+local data_validators = {};
 
-function form_t.data(layout, stanza)
+function form_t.data(layout, stanza, current)
 	local data = {};
 	local errors = {};
 	local present = {};
@@ -135,21 +164,33 @@ function form_t.data(layout, stanza)
 	for _, field in ipairs(layout) do
 		local tag;
 		for field_tag in stanza:childtags("field") do
-			if field.name == field_tag.attr.var then
+			if (field.var or field.name) == field_tag.attr.var then
 				tag = field_tag;
 				break;
 			end
 		end
 
 		if not tag then
-			if field.required then
+			if current and current[field.name] ~= nil then
+				data[field.name] = current[field.name];
+			elseif field.required then
 				errors[field.name] = "Required value missing";
 			end
-		else
+		elseif field.name then
 			present[field.name] = true;
 			local reader = field_readers[field.type];
 			if reader then
-				data[field.name], errors[field.name] = reader(tag, field.required);
+				local value, err = reader(tag, field.required);
+				local validator = field.datatype and data_validators[field.datatype];
+				if value ~= nil and validator then
+					local valid, ret = validator(value, field);
+					if valid then
+						value = ret;
+					else
+						value, err = nil, ret or ("Invalid value for data of type " .. field.datatype);
+					end
+				end
+				data[field.name], errors[field.name] = value, err;
 			end
 		end
 	end
@@ -248,8 +289,35 @@ field_readers["hidden"] =
 		return field_tag:get_child_text("value");
 	end
 
+data_validators["xs:integer"] =
+	function (data)
+		local n = tonumber(data);
+		if not n then
+			return false, "not a number";
+		elseif n % 1 ~= 0 then
+			return false, "not an integer";
+		end
+		return true, n;
+	end
+
+
+local function get_form_type(form)
+	if not st.is_stanza(form) then
+		return nil, "not a stanza object";
+	elseif form.attr.xmlns ~= "jabber:x:data" or form.name ~= "x" then
+		return nil, "not a dataform element";
+	end
+	for field in form:childtags("field") do
+		if field.attr.var == "FORM_TYPE" then
+			return field:get_child_text("value");
+		end
+	end
+	return "";
+end
+
 return {
 	new = new;
+	get_type = get_form_type;
 };
 
 

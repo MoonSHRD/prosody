@@ -1,3 +1,29 @@
+trunk
+=====
+
+**YYYY-MM-DD**
+
+New features
+------------
+
+-   Rewritten more extensible MUC module
+    -   Store inactive rooms to disk
+    -   Store rooms to disk on shutdown
+    -   Voice requests
+    -   Tombstones in place of destroyed rooms
+-   PubSub features
+    -   Persistence
+    -   Affiliations
+    -   Access models
+    -   "publish-options"
+-   PEP now uses our pubsub code and now shares the above features
+-   Asynchronous operations
+-   Busted for tests
+-   mod\_muc\_mam (XEP-0313 in groupchats)
+-   mod\_vcard\_legacy (XEP-0398)
+-   mod\_vcard4 (XEP-0292)
+-   New experimental network backend "epoll"
+
 0.10.0
 ======
 

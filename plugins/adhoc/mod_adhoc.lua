@@ -5,9 +5,8 @@
 -- COPYING file in the source package for more information.
 --
 
+local it = require "util.iterators";
 local st = require "util.stanza";
-local keys = require "util.iterators".keys;
-local array_collect = require "util.array".collect;
 local is_admin = require "core.usermanager".is_admin;
 local jid_split = require "util.jid".split;
 local adhoc_handle_cmd = module:require "adhoc".handle_cmd;
@@ -45,8 +44,8 @@ module:hook("host-disco-info-node", function (event)
 end);
 
 module:hook("host-disco-items-node", function (event)
-	local stanza, origin, reply, node = event.stanza, event.origin, event.reply, event.node;
-	if node ~= xmlns_cmd then
+	local stanza, reply, disco_node = event.stanza, event.reply, event.node;
+	if disco_node ~= xmlns_cmd then
 		return;
 	end
 
@@ -54,9 +53,7 @@ module:hook("host-disco-items-node", function (event)
 	local admin = is_admin(from, stanza.attr.to);
 	local global_admin = is_admin(from);
 	local username, hostname = jid_split(from);
-	local nodes = array_collect(keys(commands)):sort();
-	for _, node in ipairs(nodes) do
-		local command = commands[node];
+	for node, command in it.sorted_pairs(commands) do
 		if (command.permission == "admin" and admin)
 		    or (command.permission == "global_admin" and global_admin)
 		    or (command.permission == "local_user" and hostname == module.host)
@@ -69,28 +66,26 @@ module:hook("host-disco-items-node", function (event)
 	event.exists = true;
 end);
 
-module:hook("iq/host/"..xmlns_cmd..":command", function (event)
+module:hook("iq-set/host/"..xmlns_cmd..":command", function (event)
 	local origin, stanza = event.origin, event.stanza;
-	if stanza.attr.type == "set" then
-		local node = stanza.tags[1].attr.node
-		local command = commands[node];
-		if command then
-			local from = stanza.attr.from;
-			local admin = is_admin(from, stanza.attr.to);
-			local global_admin = is_admin(from);
-			local username, hostname = jid_split(from);
-			if (command.permission == "admin" and not admin)
-			    or (command.permission == "global_admin" and not global_admin)
-			    or (command.permission == "local_user" and hostname ~= module.host) then
-				origin.send(st.error_reply(stanza, "auth", "forbidden", "You don't have permission to execute this command"):up()
-				    :add_child(commands[node]:cmdtag("canceled")
-					:tag("note", {type="error"}):text("You don't have permission to execute this command")));
-				return true
-			end
-			-- User has permission now execute the command
-			adhoc_handle_cmd(commands[node], origin, stanza);
-			return true;
+	local node = stanza.tags[1].attr.node
+	local command = commands[node];
+	if command then
+		local from = stanza.attr.from;
+		local admin = is_admin(from, stanza.attr.to);
+		local global_admin = is_admin(from);
+		local username, hostname = jid_split(from);
+		if (command.permission == "admin" and not admin)
+		    or (command.permission == "global_admin" and not global_admin)
+		    or (command.permission == "local_user" and hostname ~= module.host) then
+			origin.send(st.error_reply(stanza, "auth", "forbidden", "You don't have permission to execute this command"):up()
+			    :add_child(commands[node]:cmdtag("canceled")
+				:tag("note", {type="error"}):text("You don't have permission to execute this command")));
+			return true
 		end
+		-- User has permission now execute the command
+		adhoc_handle_cmd(commands[node], origin, stanza);
+		return true;
 	end
 end, 500);
 

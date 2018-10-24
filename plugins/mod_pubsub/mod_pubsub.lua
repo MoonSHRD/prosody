@@ -2,6 +2,7 @@ local pubsub = require "util.pubsub";
 local st = require "util.stanza";
 local jid_bare = require "util.jid".bare;
 local usermanager = require "core.usermanager";
+local new_id = require "util.id".medium;
 
 local xmlns_pubsub = "http://jabber.org/protocol/pubsub";
 local xmlns_pubsub_event = "http://jabber.org/protocol/pubsub#event";
@@ -15,107 +16,138 @@ local expose_publisher = module:get_option_boolean("expose_publisher", false)
 local service;
 
 local lib_pubsub = module:require "pubsub";
-local handlers = lib_pubsub.handlers;
-local pubsub_error_reply = lib_pubsub.pubsub_error_reply;
 
 module:depends("disco");
 module:add_identity("pubsub", "service", pubsub_disco_name);
 module:add_feature("http://jabber.org/protocol/pubsub");
 
 function handle_pubsub_iq(event)
-	local origin, stanza = event.origin, event.stanza;
-	local pubsub = stanza.tags[1];
-	local action = pubsub.tags[1];
-	if not action then
-		origin.send(st.error_reply(stanza, "cancel", "bad-request"));
-		return true;
-	end
-	local handler = handlers[stanza.attr.type.."_"..action.name];
-	if handler then
-		handler(origin, stanza, action, service);
-		return true;
-	end
+	return lib_pubsub.handle_pubsub_iq(event, service);
 end
 
-function simple_broadcast(kind, node, jids, item, actor)
+-- An itemstore supports the following methods:
+--   items(): iterator over (id, item)
+--   get(id): return item with id
+--   set(id, item): set id to item
+--   clear(): clear all items
+--   resize(n): set new limit and trim oldest items
+--   tail(): return the latest item
+
+-- A nodestore supports the following methods:
+--   set(node_name, node_data)
+--   get(node_name)
+--   users(): iterator over (node_name)
+
+
+local node_store = module:open_store(module.name.."_nodes");
+
+local function create_simple_itemstore(node_config, node_name)
+	local archive = module:open_store("pubsub_"..node_name, "archive");
+	return lib_pubsub.archive_itemstore(archive, node_config, nil, node_name);
+end
+
+function simple_broadcast(kind, node, jids, item, actor, node_obj)
+	if node_obj then
+		if node_obj.config["notify_"..kind] == false then
+			return;
+		end
+	end
+	if kind == "retract" then
+		kind = "items"; -- XEP-0060 signals retraction in an <items> container
+	end
+
 	if item then
 		item = st.clone(item);
 		item.attr.xmlns = nil; -- Clear the pubsub namespace
-		if expose_publisher and actor then
-			item.attr.publisher = actor
+		if kind == "items" then
+			if node_obj and node_obj.config.include_payload == false then
+				item:maptags(function () return nil; end);
+			end
+			if expose_publisher and actor then
+				item.attr.publisher = actor
+			end
 		end
 	end
-	local message = st.message({ from = module.host, type = "headline" })
+
+	local id = new_id();
+	local msg_type = node_obj and node_obj.config.message_type or "headline";
+	local message = st.message({ from = module.host, type = msg_type, id = id })
 		:tag("event", { xmlns = xmlns_pubsub_event })
 			:tag(kind, { node = node })
-				:add_child(item);
-	for jid in pairs(jids) do
-		module:log("debug", "Sending notification to %s", jid);
-		message.attr.to = jid;
-		module:send(message);
+
+	if item then
+		message:add_child(item);
+	end
+
+	local summary;
+	-- Compose a sensible textual representation of at least Atom payloads
+	if item and item.tags[1] then
+		local payload = item.tags[1];
+		summary = module:fire_event("pubsub-summary/"..payload.attr.xmlns, {
+			kind = kind, node = node, jids = jids, actor = actor, item = item, payload = payload,
+		});
+	end
+
+	for jid, options in pairs(jids) do
+		local new_stanza = st.clone(message);
+		if summary and type(options) == "table" and options["pubsub#include_body"] then
+			new_stanza:body(summary);
+		end
+		new_stanza.attr.to = jid;
+		module:send(new_stanza);
 	end
 end
+
+local max_max_items = module:get_option_number("pubsub_max_items", 256);
+function check_node_config(node, actor, new_config) -- luacheck: ignore 212/actor 212/node
+	if (new_config["max_items"] or 1) > max_max_items then
+		return false;
+	end
+	if new_config["access_model"] ~= "whitelist" and new_config["access_model"] ~= "open" then
+		return false;
+	end
+	return true;
+end
+
+function is_item_stanza(item)
+	return st.is_stanza(item) and item.attr.xmlns == xmlns_pubsub and item.name == "item";
+end
+
+module:hook("pubsub-summary/http://www.w3.org/2005/Atom", function (event)
+	local payload = event.payload;
+	local title = payload:get_child_text("title");
+	local summary = payload:get_child_text("summary");
+	if not summary and title then
+		local author = payload:find("author/name#");
+		summary = title;
+		if author then
+			summary = author .. " posted " .. summary;
+		end
+	end
+	return summary;
+end);
 
 module:hook("iq/host/"..xmlns_pubsub..":pubsub", handle_pubsub_iq);
 module:hook("iq/host/"..xmlns_pubsub_owner..":pubsub", handle_pubsub_iq);
 
-local feature_map = {
-	create = { "create-nodes", "instant-nodes", "item-ids" };
-	retract = { "delete-items", "retract-items" };
-	purge = { "purge-nodes" };
-	publish = { "publish", autocreate_on_publish and "auto-create" };
-	delete = { "delete-nodes" };
-	get_items = { "retrieve-items" };
-	add_subscription = { "subscribe" };
-	get_subscriptions = { "retrieve-subscriptions" };
-	set_configure = { "config-node" };
-	get_default = { "retrieve-default" };
-};
-
-local function add_disco_features_from_service(service)
-	for method, features in pairs(feature_map) do
-		if service[method] then
-			for _, feature in ipairs(features) do
-				if feature then
-					module:add_feature(xmlns_pubsub.."#"..feature);
-				end
-			end
-		end
-	end
-	for affiliation in pairs(service.config.capabilities) do
-		if affiliation ~= "none" and affiliation ~= "owner" then
-			module:add_feature(xmlns_pubsub.."#"..affiliation.."-affiliation");
-		end
+local function add_disco_features_from_service(service) --luacheck: ignore 431/service
+	for feature in lib_pubsub.get_feature_set(service) do
+		module:add_feature(xmlns_pubsub.."#"..feature);
 	end
 end
 
 module:hook("host-disco-info-node", function (event)
-	local stanza, origin, reply, node = event.stanza, event.origin, event.reply, event.node;
-	local ok, ret = service:get_nodes(stanza.attr.from);
-	if not ok or not ret[node] then
-		return;
-	end
-	event.exists = true;
-	reply:tag("identity", { category = "pubsub", type = "leaf" });
+	return lib_pubsub.handle_disco_info_node(event, service);
 end);
 
 module:hook("host-disco-items-node", function (event)
-	local stanza, origin, reply, node = event.stanza, event.origin, event.reply, event.node;
-	local ok, ret = service:get_items(node, stanza.attr.from);
-	if not ok then
-		return;
-	end
-
-	for _, id in ipairs(ret) do
-		reply:tag("item", { jid = module.host, name = id }):up();
-	end
-	event.exists = true;
+	return lib_pubsub.handle_disco_items_node(event, service);
 end);
 
 
 module:hook("host-disco-items", function (event)
-	local stanza, origin, reply = event.stanza, event.origin, event.reply;
-	local ok, ret = service:get_nodes(event.stanza.attr.from);
+	local stanza, reply = event.stanza, event.reply;
+	local ok, ret = service:get_nodes(stanza.attr.from);
 	if not ok then
 		return;
 	end
@@ -130,6 +162,10 @@ local function get_affiliation(jid)
 	if bare_jid == module.host or usermanager.is_admin(bare_jid, module.host) then
 		return admin_aff;
 	end
+end
+
+function get_service()
+	return service;
 end
 
 function set_service(new_service)
@@ -150,82 +186,14 @@ function module.load()
 	if module.reloading then return; end
 
 	set_service(pubsub.new({
-		capabilities = {
-			none = {
-				create = false;
-				publish = false;
-				retract = false;
-				get_nodes = true;
-
-				subscribe = true;
-				unsubscribe = true;
-				get_subscription = true;
-				get_subscriptions = true;
-				get_items = true;
-
-				subscribe_other = false;
-				unsubscribe_other = false;
-				get_subscription_other = false;
-				get_subscriptions_other = false;
-
-				be_subscribed = true;
-				be_unsubscribed = true;
-
-				set_affiliation = false;
-			};
-			publisher = {
-				create = false;
-				publish = true;
-				retract = true;
-				get_nodes = true;
-
-				subscribe = true;
-				unsubscribe = true;
-				get_subscription = true;
-				get_subscriptions = true;
-				get_items = true;
-
-				subscribe_other = false;
-				unsubscribe_other = false;
-				get_subscription_other = false;
-				get_subscriptions_other = false;
-
-				be_subscribed = true;
-				be_unsubscribed = true;
-
-				set_affiliation = false;
-			};
-			owner = {
-				create = true;
-				publish = true;
-				retract = true;
-				delete = true;
-				get_nodes = true;
-				configure = true;
-
-				subscribe = true;
-				unsubscribe = true;
-				get_subscription = true;
-				get_subscriptions = true;
-				get_items = true;
-
-
-				subscribe_other = true;
-				unsubscribe_other = true;
-				get_subscription_other = true;
-				get_subscriptions_other = true;
-
-				be_subscribed = true;
-				be_unsubscribed = true;
-
-				set_affiliation = true;
-			};
-		};
-
 		autocreate_on_publish = autocreate_on_publish;
 		autocreate_on_subscribe = autocreate_on_subscribe;
 
+		nodestore = node_store;
+		itemstore = create_simple_itemstore;
 		broadcaster = simple_broadcast;
+		itemcheck = is_item_stanza;
+		check_node_config = check_node_config;
 		get_affiliation = get_affiliation;
 
 		normalize_jid = jid_bare;

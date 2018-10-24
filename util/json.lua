@@ -7,10 +7,10 @@
 --
 
 local type = type;
-local t_insert, t_concat, t_remove, t_sort = table.insert, table.concat, table.remove, table.sort;
+local t_insert, t_concat, t_remove = table.insert, table.concat, table.remove;
 local s_char = string.char;
 local tostring, tonumber = tostring, tonumber;
-local pairs, ipairs = pairs, ipairs;
+local pairs, ipairs, spairs = pairs, ipairs, require "util.iterators".sorted_pairs;
 local next = next;
 local getmetatable, setmetatable = getmetatable, setmetatable;
 local print = print;
@@ -27,9 +27,6 @@ module.null = null;
 local escapes = {
 	["\""] = "\\\"", ["\\"] = "\\\\", ["\b"] = "\\b",
 	["\f"] = "\\f", ["\n"] = "\\n", ["\r"] = "\\r", ["\t"] = "\\t"};
-local unescapes = {
-	["\""] = "\"", ["\\"] = "\\", ["/"] = "/",
-	b = "\b", f = "\f", n = "\n", r = "\r", t = "\t"};
 for i=0,31 do
 	local ch = s_char(i);
 	if not escapes[ch] then escapes[ch] = ("\\u%.4X"):format(i); end
@@ -98,25 +95,12 @@ function tablesave(o, buffer)
 	if next(__hash) ~= nil or next(hash) ~= nil or next(__array) == nil then
 		t_insert(buffer, "{");
 		local mark = #buffer;
-		if buffer.ordered then
-			local keys = {};
-			for k in pairs(hash) do
-				t_insert(keys, k);
-			end
-			t_sort(keys);
-			for _,k in ipairs(keys) do
-				stringsave(k, buffer);
-				t_insert(buffer, ":");
-				simplesave(hash[k], buffer);
-				t_insert(buffer, ",");
-			end
-		else
-			for k,v in pairs(hash) do
-				stringsave(k, buffer);
-				t_insert(buffer, ":");
-				simplesave(v, buffer);
-				t_insert(buffer, ",");
-			end
+		local _pairs = buffer.ordered and spairs or pairs;
+		for k,v in _pairs(hash) do
+			stringsave(k, buffer);
+			t_insert(buffer, ":");
+			simplesave(v, buffer);
+			t_insert(buffer, ",");
 		end
 		if next(__hash) ~= nil then
 			t_insert(buffer, "\"__hash\":[");
@@ -263,8 +247,9 @@ end
 local function _unescape_func(x)
 	x = x:match("%x%x%x%x", 3);
 	if x then
-		--if x >= 0xD800 and x <= 0xDFFF then _unescape_error = true; end -- bad surrogate pair
-		return codepoint_to_utf8(tonumber(x, 16));
+		local codepoint = tonumber(x, 16)
+		if codepoint >= 0xD800 and codepoint <= 0xDFFF then _unescape_error = true; end -- bad surrogate pair
+		return codepoint_to_utf8(codepoint);
 	end
 	_unescape_error = true;
 end
@@ -276,7 +261,7 @@ function _readstring(json, index)
 		--if s:find("[%z-\31]") then return nil, "control char in string"; end
 		-- FIXME handle control characters
 		_unescape_error = nil;
-		--s = s:gsub("\\u[dD][89abAB]%x%x\\u[dD][cdefCDEF]%x%x", _unescape_surrogate_func);
+		s = s:gsub("\\u[dD][89abAB]%x%x\\u[dD][cdefCDEF]%x%x", _unescape_surrogate_func);
 		-- FIXME handle escapes beyond BMP
 		s = s:gsub("\\u.?.?.?.?", _unescape_func);
 		if _unescape_error then return nil, "invalid escape"; end

@@ -16,7 +16,8 @@ local b64 = require "util.encodings".base64.encode;
 local server = require "net.server";
 local portmanager = require "core.portmanager";
 
-local sessions, transfers = module:shared("sessions", "transfers");
+local sessions = module:shared("sessions");
+local transfers = module:shared("transfers");
 local max_buffer_size = 4096;
 
 local listener = {};
@@ -44,7 +45,7 @@ function listener.onincoming(conn, data)
 		end -- else error, unexpected input
 		conn:write("\5\255"); -- send (SOCKS version 5, no acceptable method)
 		conn:close();
-		module:log("debug", "Invalid SOCKS5 greeting recieved: '%s'", b64(data));
+		module:log("debug", "Invalid SOCKS5 greeting received: '%s'", b64(data));
 	else -- connection request
 		--local head = string.char( 0x05, 0x01, 0x00, 0x03, 40 ); -- ( VER=5=SOCKS5, CMD=1=CONNECT, RSV=0=RESERVED, ATYP=3=DOMAIMNAME, SHA-1 size )
 		if #data == 47 and data:sub(1,5) == "\5\1\0\3\40" and data:sub(-2) == "\0\0" then
@@ -66,12 +67,12 @@ function listener.onincoming(conn, data)
 		else -- error, unexpected input
 			conn:write("\5\1\0\3\0\0\0"); -- VER, REP, RSV, ATYP, BND.ADDR (sha), BND.PORT (2 Byte)
 			conn:close();
-			module:log("debug", "Invalid SOCKS5 negotiation recieved: '%s'", b64(data));
+			module:log("debug", "Invalid SOCKS5 negotiation received: '%s'", b64(data));
 		end
 	end
 end
 
-function listener.ondisconnect(conn, err)
+function listener.ondisconnect(conn)
 	local session = sessions[conn];
 	if session then
 		if transfers[session.sha] then
@@ -79,7 +80,7 @@ function listener.ondisconnect(conn, err)
 			if initiator == conn and target ~= nil then
 				target:close();
 			elseif target == conn and initiator ~= nil then
-			 	initiator:close();
+				initiator:close();
 			end
 			transfers[session.sha] = nil;
 		end
@@ -109,7 +110,8 @@ function module.add_host(module)
 		local origin, stanza = event.origin, event.stanza;
 
 		-- check ACL
-		while proxy_acl and #proxy_acl > 0 do -- using 'while' instead of 'if' so we can break out of it
+		-- using 'while' instead of 'if' so we can break out of it
+		while proxy_acl and #proxy_acl > 0 do --luacheck: ignore 512
 			local jid = stanza.attr.from;
 			local allow;
 			for _, acl in ipairs(proxy_acl) do
@@ -123,7 +125,7 @@ function module.add_host(module)
 
 		local sid = stanza.tags[1].attr.sid;
 		origin.send(st.reply(stanza):tag("query", {xmlns="http://jabber.org/protocol/bytestreams", sid=sid})
-			:tag("streamhost", {jid=host, host=proxy_address, port=proxy_port}));
+			:tag("streamhost", {jid=host, host=proxy_address, port=("%d"):format(proxy_port)}));
 		return true;
 	end);
 

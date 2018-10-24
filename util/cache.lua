@@ -116,6 +116,25 @@ function cache_methods:tail()
 	return tail.key, tail.value;
 end
 
+function cache_methods:resize(new_size)
+	new_size = assert(tonumber(new_size), "cache size must be a number");
+	new_size = math.floor(new_size);
+	assert(new_size > 0, "cache size must be greater than zero");
+	local on_evict = self._on_evict;
+	while self._count > new_size do
+		local tail = self._tail;
+		local evicted_key, evicted_value = tail.key, tail.value;
+		if on_evict ~= nil and (on_evict == false or on_evict(evicted_key, evicted_value) == false) then
+			-- Cache is full, and we're not allowed to evict
+			return false;
+		end
+		_remove(self, tail);
+		self._data[evicted_key] = nil;
+	end
+	self.size = new_size;
+	return true;
+end
+
 function cache_methods:table()
 	--luacheck: ignore 212/t
 	if not self.proxy_table then
@@ -137,6 +156,13 @@ function cache_methods:table()
 		});
 	end
 	return self.proxy_table;
+end
+
+function cache_methods:clear()
+	self._data = {};
+	self._count = 0;
+	self._head = nil;
+	self._tail = nil;
 end
 
 local function new(size, on_evict)

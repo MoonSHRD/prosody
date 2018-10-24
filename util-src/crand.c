@@ -21,19 +21,22 @@
 
 #define _DEFAULT_SOURCE
 
-#include "lualib.h"
-#include "lauxlib.h"
-
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+
+#include "lualib.h"
+#include "lauxlib.h"
 
 #if defined(WITH_GETRANDOM)
 
 #ifndef __GLIBC_PREREQ
+/* Not compiled with glibc at all */
 #define __GLIBC_PREREQ(a,b) 0
 #endif
 
 #if ! __GLIBC_PREREQ(2,25)
+/* Not compiled with a glibc that provides getrandom() */
 #include <unistd.h>
 #include <sys/syscall.h>
 
@@ -49,45 +52,66 @@ int getrandom(void *buf, size_t buflen, unsigned int flags) {
 #include <sys/random.h>
 #endif
 
-#elif defined(WITH_ARC4RANDOM)
-#include <stdlib.h>
 #elif defined(WITH_OPENSSL)
 #include <openssl/rand.h>
+#elif defined(WITH_ARC4RANDOM)
+#ifdef __linux__
+#include <bsd/stdlib.h>
+#endif
 #else
 #error util.crand compiled without a random source
 #endif
 
+#ifndef SMALLBUFSIZ
+#define SMALLBUFSIZ 32
+#endif
+
 int Lrandom(lua_State *L) {
-	int ret = 0;
-	size_t len = (size_t)luaL_checkinteger(L, 1);
-	void *buf = lua_newuserdata(L, len);
+	char smallbuf[SMALLBUFSIZ];
+	char *buf = &smallbuf[0];
+	const lua_Integer l = luaL_checkinteger(L, 1);
+	const size_t len = l;
+	luaL_argcheck(L, l >= 0, 1, "must be > 0");
+
+	if(len == 0) {
+		lua_pushliteral(L, "");
+		return 1;
+	}
+
+	if(len > SMALLBUFSIZ) {
+		buf = lua_newuserdata(L, len);
+	}
 
 #if defined(WITH_GETRANDOM)
 	/*
 	 * This acts like a read from /dev/urandom with the exception that it
 	 * *does* block if the entropy pool is not yet initialized.
 	 */
-	ret = getrandom(buf, len, 0);
+	int left = len;
+	char *p = buf;
 
-	if(ret < 0) {
-		lua_pushstring(L, strerror(errno));
-		return lua_error(L);
-	}
+	do {
+		int ret = getrandom(p, left, 0);
+
+		if(ret < 0) {
+			lua_pushstring(L, strerror(errno));
+			return lua_error(L);
+		}
+
+		p += ret;
+		left -= ret;
+	} while(left > 0);
 
 #elif defined(WITH_ARC4RANDOM)
 	arc4random_buf(buf, len);
-	ret = len;
 #elif defined(WITH_OPENSSL)
+
 	if(!RAND_status()) {
 		lua_pushliteral(L, "OpenSSL PRNG not seeded");
 		return lua_error(L);
 	}
 
-	ret = RAND_bytes(buf, len);
-
-	if(ret == 1) {
-		ret = len;
-	} else {
+	if(RAND_bytes((unsigned char *)buf, len) != 1) {
 		/* TODO ERR_get_error() */
 		lua_pushstring(L, "RAND_bytes() failed");
 		return lua_error(L);
@@ -95,7 +119,7 @@ int Lrandom(lua_State *L) {
 
 #endif
 
-	lua_pushlstring(L, buf, ret);
+	lua_pushlstring(L, buf, len);
 	return 1;
 }
 

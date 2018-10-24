@@ -13,6 +13,7 @@ local portmanager = require "core.portmanager";
 local moduleapi = require "core.moduleapi";
 local url_parse = require "socket.url".parse;
 local url_build = require "socket.url".build;
+local normalize_path = require "util.http".normalize_path;
 
 local server = require "net.http.server";
 
@@ -20,16 +21,6 @@ server.set_default_host(module:get_option_string("http_default_host"));
 
 server.set_option("body_size_limit", module:get_option_number("http_max_content_size"));
 server.set_option("buffer_size_limit", module:get_option_number("http_max_buffer_size"));
-
-local function normalize_path(path, is_dir)
-	if is_dir then
-		if path:sub(-1,-1) ~= "/" then path = path.."/"; end
-	else
-		if path:sub(-1,-1) == "/" then path = path:sub(1, -2); end
-	end
-	if path:sub(1,1) ~= "/" then path = "/"..path; end
-	return path;
-end
 
 local function get_http_event(host, app_path, key)
 	local method, path = key:match("^(%S+)%s+(.+)$");
@@ -42,7 +33,11 @@ local function get_http_event(host, app_path, key)
 	if app_path == "/" and path:sub(1,1) == "/" then
 		app_path = "";
 	end
-	return method:upper().." "..host..app_path..path;
+	if host == "*" then
+		return method:upper().." "..app_path..path;
+	else
+		return method:upper().." "..host..app_path..path;
+	end
 end
 
 local function get_base_path(host_module, app_name, default_app_path)
@@ -54,6 +49,9 @@ end
 
 local function redir_handler(event)
 	event.response.headers.location = event.request.path.."/";
+	if event.request.url.query then
+		event.response.headers.location = event.response.headers.location .. "?" .. event.request.url.query
+	end
 	return 301;
 end
 
@@ -68,10 +66,10 @@ function moduleapi.http_url(module, app_name, default_path)
 	end
 	local services = portmanager.get_active_services();
 	local http_services = services:get("https") or services:get("http") or {};
-	for interface, ports in pairs(http_services) do
-		for port, services in pairs(ports) do
+	for interface, ports in pairs(http_services) do -- luacheck: ignore 213/interface
+		for port, service in pairs(ports) do -- luacheck: ignore 512
 			local url = {
-				scheme = (external_url.scheme or services[1].service.name);
+				scheme = (external_url.scheme or service[1].service.name);
 				host = (external_url.host or module:get_option_string("http_host", module.host));
 				port = tonumber(external_url.port) or port or 80;
 				path = normalize_path(external_url.path or "/", true)..
@@ -86,7 +84,10 @@ function moduleapi.http_url(module, app_name, default_path)
 end
 
 function module.add_host(module)
-	local host = module:get_option_string("http_host", module.host);
+	local host = module.host;
+	if host ~= "*" then
+		host = module:get_option_string("http_host", host);
+	end
 	local apps = {};
 	module.environment.apps = apps;
 	local function http_app_added(event)
@@ -109,9 +110,9 @@ function module.add_host(module)
 				elseif event_name:sub(-2, -1) == "/*" then
 					local base_path_len = #event_name:match("/.+$");
 					local _handler = handler;
-					handler = function (event)
-						local path = event.request.path:sub(base_path_len);
-						return _handler(event, path);
+					handler = function (_event)
+						local path = _event.request.path:sub(base_path_len);
+						return _handler(_event, path);
 					end;
 					module:hook_object_event(server, event_name:sub(1, -3), redir_handler, -1);
 				elseif event_name:sub(-1, -1) == "/" then
@@ -124,7 +125,7 @@ function module.add_host(module)
 					module:log("warn", "App %s added handler twice for '%s', ignoring", app_name, event_name);
 				end
 			else
-				module:log("error", "Invalid route in %s, %q. See http://prosody.im/doc/developers/http#routes", app_name, key);
+				module:log("error", "Invalid route in %s, %q. See https://prosody.im/doc/developers/http#routes", app_name, key);
 			end
 		end
 		local services = portmanager.get_active_services();
@@ -138,18 +139,47 @@ function module.add_host(module)
 	local function http_app_removed(event)
 		local app_handlers = apps[event.item.name];
 		apps[event.item.name] = nil;
-		for event, handler in pairs(app_handlers) do
-			module:unhook_object_event(server, event, handler);
+		for event_name, handler in pairs(app_handlers) do
+			module:unhook_object_event(server, event_name, handler);
 		end
 	end
 
 	module:handle_items("http-provider", http_app_added, http_app_removed);
 
-	server.add_host(host);
-	function module.unload()
-		server.remove_host(host);
+	if host ~= "*" then
+		server.add_host(host);
+		function module.unload()
+			server.remove_host(host);
+		end
 	end
 end
+
+module.add_host(module); -- set up handling on global context too
+
+local trusted_proxies = module:get_option_set("trusted_proxies", { "127.0.0.1", "::1" })._items;
+
+local function get_ip_from_request(request)
+	local ip = request.conn:ip();
+	local forwarded_for = request.headers.x_forwarded_for;
+	if forwarded_for then
+		forwarded_for = forwarded_for..", "..ip;
+		for forwarded_ip in forwarded_for:gmatch("[^%s,]+") do
+			if not trusted_proxies[forwarded_ip] then
+				ip = forwarded_ip;
+			end
+		end
+	end
+	return ip;
+end
+
+module:wrap_object_event(server._events, false, function (handlers, event_name, event_data)
+	local request = event_data.request;
+	if request then
+		-- Not included in eg http-error events
+		request.ip = get_ip_from_request(request);
+	end
+	return handlers(event_name, event_data);
+end);
 
 module:provides("net", {
 	name = "http";

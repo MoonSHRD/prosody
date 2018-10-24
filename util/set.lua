@@ -11,8 +11,9 @@ local ipairs, pairs, setmetatable, next, tostring =
 local t_concat = table.concat;
 
 local _ENV = nil;
+-- luacheck: std none
 
-local set_mt = {};
+local set_mt = { __name = "set" };
 function set_mt.__call(set, _, k)
 	return next(set._items, k);
 end
@@ -20,6 +21,14 @@ end
 local items_mt = {};
 function items_mt.__call(items, _, k)
 	return next(items, k);
+end
+
+function set_mt:__freeze()
+	local a, i = {}, 1;
+	for item in self._items do
+		a[i], i = item, i+1;
+	end
+	return a;
 end
 
 local function new(list)

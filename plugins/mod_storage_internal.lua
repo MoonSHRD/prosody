@@ -44,17 +44,36 @@ local archive = {};
 driver.archive = { __index = archive };
 
 function archive:append(username, key, value, when, with)
-	key = key or id();
 	when = when or now();
 	if not st.is_stanza(value) then
 		return nil, "unsupported-datatype";
 	end
 	value = st.preserialize(st.clone(value));
-	value.key = key;
 	value.when = when;
 	value.with = with;
 	value.attr.stamp = datetime.datetime(when);
 	value.attr.stamp_legacy = datetime.legacy(when);
+
+	if key then
+		local items, err = datamanager.list_load(username, host, self.store);
+		if not items and err then return items, err; end
+		if items then
+			items = array(items);
+			items:filter(function (item)
+				return item.key ~= key;
+			end);
+			value.key = key;
+			items:push(value);
+			local ok, err = datamanager.list_store(username, host, self.store, items);
+			if not ok then return ok, err; end
+			return key;
+		end
+	else
+		key = id();
+	end
+
+	value.key = key;
+
 	local ok, err = datamanager.list_append(username, host, self.store, value);
 	if not ok then return ok, err; end
 	return key;
@@ -141,9 +160,6 @@ function archive:delete(username, query)
 	if not query or next(query) == nil then
 		return datamanager.list_store(username, host, self.store, nil);
 	end
-	for k in pairs(query) do
-		if k ~= "end" then return nil, "unsupported-query-field"; end
-	end
 	local items, err = datamanager.list_load(username, host, self.store);
 	if not items then
 		if err then
@@ -154,10 +170,48 @@ function archive:delete(username, query)
 	end
 	items = array(items);
 	local count_before = #items;
-	items:filter(function (item)
-		return item.when > query["end"];
-	end);
+	if query then
+		if query.key then
+			items:filter(function (item)
+				return item.key ~= query.key;
+			end);
+		end
+		if query.with then
+			items:filter(function (item)
+				return item.with ~= query.with;
+			end);
+		end
+		if query.start then
+			items:filter(function (item)
+				return item.when < query.start;
+			end);
+		end
+		if query["end"] then
+			items:filter(function (item)
+				return item.when > query["end"];
+			end);
+		end
+		if query.truncate and #items > query.truncate then
+			if query.reverse then
+				-- Before: { 1, 2, 3, 4, 5, }
+				-- After: { 1, 2, 3 }
+				for i = #items, query.truncate + 1, -1 do
+					items[i] = nil;
+				end
+			else
+				-- Before: { 1, 2, 3, 4, 5, }
+				-- After: { 3, 4, 5 }
+				local offset = #items - query.truncate;
+				for i = 1, #items do
+					items[i] = items[i+offset];
+				end
+			end
+		end
+	end
 	local count = count_before - #items;
+	if count == 0 then
+		return 0; -- No changes, skip write
+	end
 	local ok, err = datamanager.list_store(username, host, self.store, items);
 	if not ok then return ok, err; end
 	return count;

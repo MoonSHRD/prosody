@@ -29,7 +29,7 @@ local function handle_vcard(event)
 		else
 			session.send(st.error_reply(stanza, "cancel", "item-not-found"));
 		end
-	else
+	else -- stanza.attr.type == "set"
 		if not to then
 			if vcards:set(session.username, st.preserialize(stanza.tags[1])) then
 				session.send(st.reply(stanza));
@@ -46,9 +46,3 @@ end
 
 module:hook("iq/bare/vcard-temp:vCard", handle_vcard);
 module:hook("iq/host/vcard-temp:vCard", handle_vcard);
-
--- COMPAT w/0.8
-if module:get_option("vcard_compatibility") ~= nil then
-	module:log("error", "The vcard_compatibility option has been removed, see"..
-		"mod_compat_vcard in prosody-modules if you still need this.");
-end

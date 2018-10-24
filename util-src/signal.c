@@ -26,7 +26,9 @@
  * OTHER DEALINGS IN THE SOFTWARE.
 */
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #include <signal.h>
 #include <stdlib.h>
@@ -166,6 +168,7 @@ int signals[MAX_PENDING_SIGNALS];
 int nsig = 0;
 
 static void sighook(lua_State *L, lua_Debug *ar) {
+	(void)ar;
 	/* restore the old hook */
 	lua_sethook(L, Hsig, Hmask, Hcount);
 

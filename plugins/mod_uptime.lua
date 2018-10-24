@@ -14,15 +14,14 @@ module:hook_global("server-started", function() start_time = prosody.start_time 
 -- XEP-0012: Last activity
 module:add_feature("jabber:iq:last");
 
-module:hook("iq/host/jabber:iq:last:query", function(event)
+module:hook("iq-get/host/jabber:iq:last:query", function(event)
 	local origin, stanza = event.origin, event.stanza;
-	if stanza.attr.type == "get" then
-		origin.send(st.reply(stanza):tag("query", {xmlns = "jabber:iq:last", seconds = tostring(os.difftime(os.time(), start_time))}));
-		return true;
-	end
+	origin.send(st.reply(stanza):tag("query", {xmlns = "jabber:iq:last", seconds = tostring(os.difftime(os.time(), start_time))}));
+	return true;
 end);
 
 -- Ad-hoc command
+module:depends "adhoc";
 local adhoc_new = module:require "adhoc".new;
 
 function uptime_text()
@@ -39,7 +38,7 @@ function uptime_text()
 		minutes, (minutes ~= 1 and "s") or "", os.date("%c", prosody.start_time));
 end
 
-function uptime_command_handler (self, data, state)
+function uptime_command_handler ()
 	return { info = uptime_text(), status = "completed" };
 end
 

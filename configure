@@ -92,7 +92,7 @@ EOF
 # Helper functions
 
 find_program() {
-   prog=`command -v "$1" 2>/dev/null`
+   prog=$(command -v "$1" 2>/dev/null)
    if [ -n "$prog" ]
    then
       dirname "$prog"
@@ -107,26 +107,8 @@ die() {
    exit 1
 }
 
-find_helper() {
-   explanation="$1"
-   shift
-   tried="$*"
-   while [ -n "$1" ]
-do
-      found=`find_program "$1"`
-      if [ -n "$found" ]
-      then
-         echo "$1 found at $found"
-         HELPER=$1
-         return
-      fi
-      shift
-   done
-   echo "Could not find $explanation. Tried: $tried."
-   die "Make sure one of them is installed and available in your PATH."
-}
-
-case `echo -n x` in
+# shellcheck disable=SC2039
+case $(echo -n x) in
 -n*) echo_n_flag='';;
 *)   echo_n_flag='-n';;
 esac
@@ -143,12 +125,14 @@ echo_n() {
 
 while [ -n "$1" ]
 do
-   value="`echo $1 | sed 's/[^=]*.\(.*\)/\1/'`"
-   key="`echo $1 | sed 's/=.*//'`"
-   if `echo "$value" | grep "~" >/dev/null 2>/dev/null`
+   value=$(echo "$1" | sed 's/[^=]*.\(.*\)/\1/')
+   key=$(echo "$1" | sed 's/=.*//')
+   # shellcheck disable=SC2088
+   if echo "$value" | grep "~" >/dev/null 2>/dev/null
    then
       echo
       echo '*WARNING*: the "~" sign is not expanded in flags.'
+      # shellcheck disable=SC2016
       echo 'If you mean the home directory, use $HOME instead.'
       echo
    fi
@@ -169,9 +153,8 @@ do
       ;;
    --ostype)
 	# TODO make this a switch?
-      OSTYPE="$value"
-      OSTYPE_SET=yes
-      if [ "$OSTYPE" = "debian" ]; then
+      OSPRESET="$value"
+      if [ "$OSPRESET" = "debian" ]; then
          if [ "$LUA_SUFFIX_SET" != "yes" ]; then
             LUA_SUFFIX="5.1";
             LUA_SUFFIX_SET=yes
@@ -184,7 +167,7 @@ do
          LUA_INCDIR_SET=yes
          CFLAGS="$CFLAGS -ggdb"
       fi
-      if [ "$OSTYPE" = "macosx" ]; then
+      if [ "$OSPRESET" = "macosx" ]; then
          LUA_INCDIR=/usr/local/include;
          LUA_INCDIR_SET=yes
          LUA_LIBDIR=/usr/local/lib
@@ -192,14 +175,14 @@ do
          CFLAGS="$CFLAGS -mmacosx-version-min=10.3"
          LDFLAGS="-bundle -undefined dynamic_lookup"
       fi
-      if [ "$OSTYPE" = "linux" ]; then
+      if [ "$OSPRESET" = "linux" ]; then
          LUA_INCDIR=/usr/local/include;
          LUA_INCDIR_SET=yes
          LUA_LIBDIR=/usr/local/lib
          LUA_LIBDIR_SET=yes
          CFLAGS="$CFLAGS -ggdb"
       fi
-      if [ "$OSTYPE" = "freebsd" -o "$OSTYPE" = "openbsd" ]; then
+      if [ "$OSPRESET" = "freebsd" ] || [ "$OSPRESET" = "openbsd" ]; then
          LUA_INCDIR="/usr/local/include/lua51"
          LUA_INCDIR_SET=yes
          CFLAGS="-Wall -fPIC -I/usr/local/include"
@@ -211,11 +194,11 @@ do
          CC=cc
          LD=ld
       fi
-      if [ "$OSTYPE" = "openbsd" ]; then
+      if [ "$OSPRESET" = "openbsd" ]; then
          LUA_INCDIR="/usr/local/include";
          LUA_INCDIR_SET="yes"
       fi
-      if [ "$OSTYPE" = "netbsd" ]; then
+      if [ "$OSPRESET" = "netbsd" ]; then
          LUA_INCDIR="/usr/pkg/include/lua-5.1"
          LUA_INCDIR_SET=yes
          LUA_LIBDIR="/usr/pkg/lib/lua/5.1"
@@ -223,7 +206,7 @@ do
          CFLAGS="-Wall -fPIC -I/usr/pkg/include"
          LDFLAGS="-L/usr/pkg/lib -Wl,-rpath,/usr/pkg/lib -shared"
       fi
-      if [ "$OSTYPE" = "pkg-config" ]; then
+      if [ "$OSPRESET" = "pkg-config" ]; then
          if [ "$LUA_SUFFIX_SET" != "yes" ]; then
             LUA_SUFFIX="5.1";
             LUA_SUFFIX_SET=yes
@@ -254,7 +237,7 @@ do
    --lua-version|--with-lua-version)
       [ -n "$value" ] || die "Missing value in flag $key."
       LUA_VERSION="$value"
-      [ "$LUA_VERSION" = "5.1" -o "$LUA_VERSION" = "5.2" -o "$LUA_VERSION" = "5.3" ] || die "Invalid Lua version in flag $key."
+      [ "$LUA_VERSION" = "5.1" ] || [ "$LUA_VERSION" = "5.2" ] || [ "$LUA_VERSION" = "5.3" ] || die "Invalid Lua version in flag $key."
       LUA_VERSION_SET=yes
       ;;
    --with-lua)
@@ -335,7 +318,7 @@ do
    shift
 done
 
-if [ "$PREFIX_SET" = "yes" -a ! "$SYSCONFDIR_SET" = "yes" ]
+if [ "$PREFIX_SET" = "yes" ] && [ ! "$SYSCONFDIR_SET" = "yes" ]
 then
    if [ "$PREFIX" = "/usr" ]
    then SYSCONFDIR=/etc/$APP_DIRNAME
@@ -343,7 +326,7 @@ then
    fi
 fi
 
-if [ "$PREFIX_SET" = "yes" -a ! "$DATADIR_SET" = "yes" ]
+if [ "$PREFIX_SET" = "yes" ] && [ ! "$DATADIR_SET" = "yes" ]
 then
    if [ "$PREFIX" = "/usr" ]
    then DATADIR=/var/lib/$APP_DIRNAME
@@ -351,13 +334,13 @@ then
    fi
 fi
 
-if [ "$PREFIX_SET" = "yes" -a ! "$LIBDIR_SET" = "yes" ]
+if [ "$PREFIX_SET" = "yes" ] && [ ! "$LIBDIR_SET" = "yes" ]
 then
    LIBDIR=$PREFIX/lib
 fi
 
 detect_lua_version() {
-   detected_lua=`$1 -e 'print(_VERSION:match(" (5%.[123])$"))' 2> /dev/null`
+   detected_lua=$("$1" -e 'print(_VERSION:match(" (5%.[123])$"))' 2> /dev/null)
    if [ "$detected_lua" != "nil" ]
    then
       if [ "$LUA_VERSION_SET" != "yes" ]
@@ -386,9 +369,9 @@ search_interpreter() {
          find_lua="$LUA_BINDIR"
       fi
    else
-      find_lua=`find_program lua$suffix`
+      find_lua=$(find_program lua"$suffix")
    fi
-   if [ -n "$find_lua" -a -x "$find_lua/lua$suffix" ]
+   if [ -n "$find_lua" ] && [ -x "$find_lua/lua$suffix" ]
    then
       if detect_lua_version "$find_lua/lua$suffix"
       then
@@ -399,7 +382,7 @@ search_interpreter() {
          fi
          if [ "$LUA_DIR_SET" != "yes" ]
          then
-            LUA_DIR=`dirname "$find_lua"`
+            LUA_DIR=$(dirname "$find_lua")
          fi
          LUA_SUFFIX="$suffix"
          return 0
@@ -411,19 +394,19 @@ search_interpreter() {
 lua_interp_found=no
 if [ "$LUA_SUFFIX_SET" != "yes" ]
 then
-   if [ "$LUA_VERSION_SET" = "yes" -a "$LUA_VERSION" = "5.1" ]
+   if [ "$LUA_VERSION_SET" = "yes" ] && [ "$LUA_VERSION" = "5.1" ]
    then
       suffixes="5.1 51 -5.1 -51"
-   elif [ "$LUA_VERSION_SET" = "yes" -a "$LUA_VERSION" = "5.2" ]
+   elif [ "$LUA_VERSION_SET" = "yes" ] && [ "$LUA_VERSION" = "5.2" ]
    then
       suffixes="5.2 52 -5.2 -52"
-   elif [ "$LUA_VERSION_SET" = "yes" -a "$LUA_VERSION" = "5.3" ]
+   elif [ "$LUA_VERSION_SET" = "yes" ] && [ "$LUA_VERSION" = "5.3" ]
    then
       suffixes="5.3 53 -5.3 -53"
    else
       suffixes="5.1 51 -5.1 -51 5.2 52 -5.2 -52 5.3 53 -5.3 -53"
    fi
-   for suffix in "" `echo $suffixes`
+   for suffix in "" $suffixes
    do
       search_interpreter "$suffix" && {
       lua_interp_found=yes
@@ -436,15 +419,23 @@ else
 }
 fi
 
-if [ "$lua_interp_found" != "yes" -a "$RUNWITH_SET" != "yes" ]
+if [ "$lua_interp_found" != "yes" ] && [ "$RUNWITH_SET" != "yes" ]
 then
-   [ "$LUA_VERSION_SET" ] && { interp="Lua $LUA_VERSION" ;} || { interp="Lua" ;}
-   [ "$LUA_DIR_SET" -o "$LUA_BINDIR_SET" ] && { where="$LUA_BINDIR" ;} || { where="\$PATH" ;}
+   if [ "$LUA_VERSION_SET" ]; then
+      interp="Lua $LUA_VERSION";
+   else
+      interp="Lua";
+   fi
+   if [ "$LUA_DIR_SET" ] || [ "$LUA_BINDIR_SET" ]; then
+      where="$LUA_BINDIR";
+   else
+      where="\$PATH";
+   fi
    echo "$interp interpreter not found in $where"
    die "You may want to use the flags --with-lua, --with-lua-bin and/or --lua-suffix. See --help."
 fi
 
-if [ "$LUA_VERSION_SET" = "yes" -a "$RUNWITH_SET" != "yes" ]
+if [ "$LUA_VERSION_SET" = "yes" ] && [ "$RUNWITH_SET" != "yes" ]
 then
    echo_n "Checking if $LUA_BINDIR/lua$LUA_SUFFIX is Lua version $LUA_VERSION... "
    if detect_lua_version "$LUA_BINDIR/lua$LUA_SUFFIX"
@@ -528,6 +519,8 @@ OPENSSL_LIBS="-l$OPENSSL_LIB"
 
 if [ "$PRNG" = "OPENSSL" ]; then
    PRNGLIBS=$OPENSSL_LIBS
+elif [ "$PRNG" = "ARC4RANDOM" ] && [ "$(uname)" = "Linux" ]; then
+   PRNGLIBS="-lbsd"
 fi
 
 # Write config

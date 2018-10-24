@@ -17,12 +17,13 @@ local logger_init = require "util.logger".init;
 local log = logger_init("s2smanager");
 
 local prosody = _G.prosody;
-incoming_s2s = {};
+local incoming_s2s = {};
+_G.incoming_s2s = incoming_s2s;
 prosody.incoming_s2s = incoming_s2s;
-local incoming_s2s = incoming_s2s;
 local fire_event = prosody.events.fire_event;
 
 local _ENV = nil;
+-- luacheck: std none
 
 local function new_incoming(conn)
 	local session = { conn = conn, type = "s2sin_unauthed", direction = "incoming", hosts = {} };
@@ -64,6 +65,7 @@ local function retire_session(session, reason)
 
 	function session.send(data) log("debug", "Discarding data sent to resting session: %s", tostring(data)); end
 	function session.data(data) log("debug", "Discarding data received from resting session: %s", tostring(data)); end
+	session.thread = { run = function (_, data) return session.data(data) end };
 	session.sends2s = session.send;
 	return setmetatable(session, resting_session);
 end

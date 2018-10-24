@@ -13,17 +13,18 @@ local ipairs = ipairs;
 local jid_bare = require "util.jid".bare;
 local jid_prep = require "util.jid".prep;
 local config = require "core.configmanager";
-local hosts = hosts;
 local sasl_new = require "util.sasl".new;
 local storagemanager = require "core.storagemanager";
 
 local prosody = _G.prosody;
+local hosts = prosody.hosts;
 
 local setmetatable = setmetatable;
 
 local default_provider = "internal_plain";
 
 local _ENV = nil;
+-- luacheck: std none
 
 local function new_null_provider()
 	local function dummy() return nil, "method not implemented"; end;

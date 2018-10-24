@@ -10,7 +10,7 @@
 local tostring, setmetatable = tostring, setmetatable;
 local pairs, next= pairs, next;
 
-local hosts = hosts;
+local hosts = prosody.hosts;
 local full_sessions = prosody.full_sessions;
 local bare_sessions = prosody.bare_sessions;
 
@@ -20,12 +20,13 @@ local rm_load_roster = require "core.rostermanager".load_roster;
 local config_get = require "core.configmanager".get;
 local resourceprep = require "util.encodings".stringprep.resourceprep;
 local nodeprep = require "util.encodings".stringprep.nodeprep;
-local uuid_generate = require "util.uuid".generate;
+local generate_identifier = require "util.id".short;
 
 local initialize_filters = require "util.filters".initialize;
 local gettime = require "socket".gettime;
 
 local _ENV = nil;
+-- luacheck: std none
 
 local function new_session(conn)
 	local session = { conn = conn, type = "c2s_unauthed", conntime = gettime() };
@@ -74,6 +75,7 @@ local function retire_session(session)
 
 	function session.send(data) log("debug", "Discarding data sent to resting session: %s", tostring(data)); return false; end
 	function session.data(data) log("debug", "Discarding data received from resting session: %s", tostring(data)); end
+	session.thread = { run = function (_, data) return session.data(data) end };
 	return setmetatable(session, resting_session);
 end
 
@@ -137,7 +139,7 @@ local function bind_resource(session, resource)
 	end
 
 	resource = resourceprep(resource);
-	resource = resource ~= "" and resource or uuid_generate();
+	resource = resource ~= "" and resource or generate_identifier();
 	--FIXME: Randomly-generated resources must be unique per-user, and never conflict with existing
 
 	if not hosts[session.host].sessions[session.username] then
@@ -151,7 +153,7 @@ local function bind_resource(session, resource)
 			local policy = config_get(session.host, "conflict_resolve");
 			local increment;
 			if policy == "random" then
-				resource = uuid_generate();
+				resource = generate_identifier();
 				increment = true;
 			elseif policy == "increment" then
 				increment = true; -- TODO ping old resource

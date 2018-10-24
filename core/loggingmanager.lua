@@ -5,7 +5,6 @@
 -- This project is MIT/X11 licensed. Please see the
 -- COPYING file in the source package for more information.
 --
--- luacheck: globals log prosody.log
 
 local format = require "util.format".format;
 local setmetatable, rawset, pairs, ipairs, type =
@@ -18,12 +17,9 @@ local getstyle, getstring = require "util.termcolours".getstyle, require "util.t
 
 local config = require "core.configmanager";
 local logger = require "util.logger";
-local prosody = prosody;
-
-_G.log = logger.init("general");
-prosody.log = logger.init("general");
 
 local _ENV = nil;
+-- luacheck: std none
 
 -- The log config used if none specified in the config file (see reload_logging for initialization)
 local default_logging;
@@ -154,12 +150,7 @@ local function reload_logging()
 	for name, sink_maker in pairs(old_sink_types) do
 		log_sink_types[name] = sink_maker;
 	end
-
-	prosody.events.fire_event("logging-reloaded");
 end
-
-reload_logging();
-prosody.events.add_handler("config-reloaded", reload_logging);
 
 --- Definition of built-in logging sinks ---
 

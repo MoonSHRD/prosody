@@ -10,7 +10,6 @@ local log = module._log;
 
 local require = require;
 local pairs = pairs;
-local t_concat = table.concat;
 local s_find = string.find;
 local tonumber = tonumber;
 
@@ -121,6 +120,8 @@ function handle_normal_presence(origin, stanza)
 	stanza.attr.to = nil; -- reset it
 end
 
+-- luacheck: ignore 212/recipient_session
+-- TODO This argument is used in 3rd party modules
 function send_presence_of_available_resources(user, host, jid, recipient_session, stanza)
 	local h = hosts[host];
 	local count = 0;
@@ -252,7 +253,7 @@ function handle_inbound_presence_subscriptions_and_probes(origin, stanza, from_b
 end
 
 local outbound_presence_handler = function(data)
-	-- outbound presence recieved
+	-- outbound presence received
 	local origin, stanza = data.origin, data.stanza;
 
 	local to = stanza.attr.to;
@@ -280,7 +281,7 @@ module:hook("pre-presence/bare", outbound_presence_handler);
 module:hook("pre-presence/host", outbound_presence_handler);
 
 module:hook("presence/bare", function(data)
-	-- inbound presence to bare JID recieved
+	-- inbound presence to bare JID received
 	local origin, stanza = data.origin, data.stanza;
 
 	local to = stanza.attr.to;
@@ -306,7 +307,7 @@ module:hook("presence/bare", function(data)
 	return true;
 end);
 module:hook("presence/full", function(data)
-	-- inbound presence to full JID recieved
+	-- inbound presence to full JID received
 	local origin, stanza = data.origin, data.stanza;
 
 	local t = stanza.attr.type;

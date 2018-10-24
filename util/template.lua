@@ -4,12 +4,13 @@ local setmetatable = setmetatable;
 local pairs = pairs;
 local ipairs = ipairs;
 local error = error;
-local loadstring = loadstring;
+local envload = require "util.envload".envload;
 local debug = debug;
 local t_remove = table.remove;
 local parse_xml = require "util.xml".parse;
 
 local _ENV = nil;
+-- luacheck: std none
 
 local function trim_xml(stanza)
 	for i=#stanza,1,-1 do
@@ -72,7 +73,7 @@ local function create_cloner(stanza, chunkname)
 		src = src.."local _"..i.."="..lookup[i]..";";
 	end
 	src = src.."return "..name..";end";
-	local f,err = loadstring(src, chunkname);
+	local f,err = envload(src, chunkname);
 	if not f then error(err); end
 	return f(setmetatable, stanza_mt);
 end

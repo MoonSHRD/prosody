@@ -8,6 +8,8 @@
 
 --- Module containing all the logic for connecting to a remote server
 
+-- luacheck: ignore 432/err
+
 local portmanager = require "core.portmanager";
 local wrapclient = require "net.server".wrapclient;
 local initialize_filters = require "util.filters".initialize;
@@ -16,7 +18,6 @@ local new_ip = require "util.ip".new_ip;
 local rfc6724_dest = require "util.rfc6724".destination;
 local socket = require "socket";
 local adns = require "net.adns";
-local dns = require "net.dns";
 local t_insert, t_sort, ipairs = table.insert, table.sort, ipairs;
 local local_addresses = require "util.net".local_addresses;
 
@@ -30,6 +31,7 @@ local sources = {};
 local has_ipv4, has_ipv6;
 
 local dns_timeout = module:get_option_number("dns_timeout", 15);
+local resolvers = module:get_option_set("s2s_dns_resolvers")
 
 local s2sout = {};
 
@@ -45,11 +47,18 @@ local function compare_srv_priorities(a,b)
 end
 
 function s2sout.initiate_connection(host_session)
+	local log = host_session.log or log;
+
 	initialize_filters(host_session);
 	host_session.version = 1;
 
 	host_session.resolver = adns.resolver();
 	host_session.resolver._resolver:settimeout(dns_timeout);
+	if resolvers then
+		for resolver in resolvers do
+			host_session.resolver._resolver:addnameserver(resolver);
+		end
+	end
 
 	-- Kick the connection attempting machine into life
 	if not s2sout.attempt_connection(host_session) then
@@ -68,9 +77,9 @@ function s2sout.initiate_connection(host_session)
 				buffer = {};
 				host_session.send_buffer = buffer;
 			end
-			log("debug", "Buffering data on unconnected s2sout to %s", tostring(host_session.to_host));
+			log("debug", "Buffering data on unconnected s2sout to %s", host_session.to_host);
 			buffer[#buffer+1] = data;
-			log("debug", "Buffered item %d: %s", #buffer, tostring(data));
+			log("debug", "Buffered item %d: %s", #buffer, data);
 		end
 	end
 end
@@ -78,6 +87,7 @@ end
 function s2sout.attempt_connection(host_session, err)
 	local to_host = host_session.to_host;
 	local connect_host, connect_port = to_host and idna_to_ascii(to_host), 5269;
+	local log = host_session.log or log;
 
 	if not connect_host then
 		return false;
@@ -129,16 +139,16 @@ function s2sout.attempt_connection(host_session, err)
 		host_session.srv_choice = host_session.srv_choice + 1;
 		local srv_choice = host_session.srv_hosts[host_session.srv_choice];
 		connect_host, connect_port = srv_choice.target or to_host, srv_choice.port or connect_port;
-		host_session.log("info", "Connection failed (%s). Attempt #%d: This time to %s:%d", tostring(err), host_session.srv_choice, connect_host, connect_port);
+		host_session.log("info", "Connection failed (%s). Attempt #%d: This time to %s:%d", err, host_session.srv_choice, connect_host, connect_port);
 	else
-		host_session.log("info", "Failed in all attempts to connect to %s", tostring(host_session.to_host));
+		host_session.log("info", "Failed in all attempts to connect to %s", host_session.to_host);
 		-- We're out of options
 		return false;
 	end
 
 	if not (connect_host and connect_port) then
 		-- Likely we couldn't resolve DNS
-		log("warn", "Hmm, we're without a host (%s) and port (%s) to connect to for %s, giving up :(", tostring(connect_host), tostring(connect_port), tostring(to_host));
+		log("warn", "Hmm, we're without a host (%s) and port (%s) to connect to for %s, giving up :(", connect_host, connect_port, to_host);
 		return false;
 	end
 
@@ -160,10 +170,12 @@ end
 
 function s2sout.try_connect(host_session, connect_host, connect_port, err)
 	host_session.connecting = true;
+	local log = host_session.log or log;
 
 	if not err then
 		local IPs = {};
 		host_session.ip_hosts = IPs;
+		-- luacheck: ignore 231/handle4 231/handle6
 		local handle4, handle6;
 		local have_other_result = not(has_ipv4) or not(has_ipv6) or false;
 
@@ -246,6 +258,7 @@ function s2sout.try_connect(host_session, connect_host, connect_port, err)
 	elseif host_session.ip_hosts and #host_session.ip_hosts > host_session.ip_choice then -- Not our first attempt, and we also have IPs left to try
 		s2sout.try_next_ip(host_session);
 	else
+		log("debug", "Out of IP addresses, trying next SRV record (if any)");
 		host_session.ip_hosts = nil;
 		if not s2sout.attempt_connection(host_session, "out of IP addresses") then -- Retry if we can
 			log("debug", "No other records to try for %s - destroying", host_session.to_host);
@@ -259,7 +272,8 @@ function s2sout.try_connect(host_session, connect_host, connect_port, err)
 end
 
 function s2sout.make_connect(host_session, connect_host, connect_port)
-	(host_session.log or log)("debug", "Beginning new connection attempt to %s ([%s]:%d)", host_session.to_host, connect_host.addr, connect_port);
+	local log = host_session.log or log;
+	log("debug", "Beginning new connection attempt to %s ([%s]:%d)", host_session.to_host, connect_host.addr, connect_port);
 
 	-- Reset secure flag in case this is another
 	-- connection attempt after a failed STARTTLS

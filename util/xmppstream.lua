@@ -25,6 +25,7 @@ local lxp_supports_bytecount = not not lxp.new({}).getcurrentbytecount;
 local default_stanza_size_limit = 1024*1024*10; -- 10MB
 
 local _ENV = nil;
+-- luacheck: std none
 
 local new_parser = lxp.new;
 
@@ -47,7 +48,10 @@ local function new_sax_handlers(session, stream_callbacks, cb_handleprogress)
 
 	local cb_streamopened = stream_callbacks.streamopened;
 	local cb_streamclosed = stream_callbacks.streamclosed;
-	local cb_error = stream_callbacks.error or function(session, e, stanza) error("XML stream error: "..tostring(e)..(stanza and ": "..tostring(stanza) or ""),2); end;
+	local cb_error = stream_callbacks.error or
+		function(_, e, stanza)
+			error("XML stream error: "..tostring(e)..(stanza and ": "..tostring(stanza) or ""),2);
+		end;
 	local cb_handlestanza = stream_callbacks.handlestanza;
 	cb_handleprogress = cb_handleprogress or dummy_cb;
 
@@ -126,13 +130,7 @@ local function new_sax_handlers(session, stream_callbacks, cb_handleprogress)
 			t_insert(oldstanza.tags, stanza);
 		end
 	end
-	if lxp_supports_xmldecl then
-		function xml_handlers:XmlDecl(version, encoding, standalone)
-			if lxp_supports_bytecount then
-				cb_handleprogress(self:getcurrentbytecount());
-			end
-		end
-	end
+
 	function xml_handlers:StartCdataSection()
 		if lxp_supports_bytecount then
 			if stanza then
@@ -203,6 +201,18 @@ local function new_sax_handlers(session, stream_callbacks, cb_handleprogress)
 		end
 	end
 
+	if lxp_supports_xmldecl then
+		function xml_handlers:XmlDecl(version, encoding, standalone)
+			if lxp_supports_bytecount then
+				cb_handleprogress(self:getcurrentbytecount());
+			end
+			if (encoding and encoding:lower() ~= "utf-8")
+			or (standalone == "no")
+			or (version and version ~= "1.0") then
+				return restricted_handler(self);
+			end
+		end
+	end
 	if lxp_supports_doctype then
 		xml_handlers.StartDoctypeDecl = restricted_handler;
 	end
@@ -214,7 +224,7 @@ local function new_sax_handlers(session, stream_callbacks, cb_handleprogress)
 		stack = {};
 	end
 
-	local function set_session(stream, new_session)
+	local function set_session(stream, new_session) -- luacheck: ignore 212/stream
 		session = new_session;
 	end
 
@@ -238,7 +248,7 @@ local function new(session, stream_callbacks, stanza_size_limit)
 	local parser = new_parser(handlers, ns_separator, false);
 	local parse = parser.parse;
 
-	function session.open_stream(session, from, to)
+	function session.open_stream(session, from, to) -- luacheck: ignore 432/session
 		local send = session.sends2s or session.send;
 
 		local attr = {
@@ -264,13 +274,18 @@ local function new(session, stream_callbacks, stanza_size_limit)
 			n_outstanding_bytes = 0;
 			meta.reset();
 		end,
-		feed = function (self, data)
+		feed = function (self, data) -- luacheck: ignore 212/self
 			if lxp_supports_bytecount then
 				n_outstanding_bytes = n_outstanding_bytes + #data;
 			end
-			local ok, err = parse(parser, data);
+			local _parser = parser;
+			local ok, err = parse(_parser, data);
 			if lxp_supports_bytecount and n_outstanding_bytes > stanza_size_limit then
 				return nil, "stanza-too-large";
+			end
+			if parser ~= _parser then
+				_parser:parse();
+				_parser:close();
 			end
 			return ok, err;
 		end,

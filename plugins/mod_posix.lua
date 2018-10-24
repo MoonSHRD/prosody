@@ -61,7 +61,7 @@ if not prosody.start_time then -- server-starting
 	if not suid or suid == 0 or suid == "root" then
 		if pposix.getuid() == 0 and not module:get_option_boolean("run_as_root") then
 			module:log("error", "Danger, Will Robinson! Prosody doesn't need to be run as root, so don't do it!");
-			module:log("error", "For more information on running Prosody as root, see http://prosody.im/doc/root");
+			module:log("error", "For more information on running Prosody as root, see https://prosody.im/doc/root");
 			prosody.shutdown("Refusing to run as root");
 		end
 	end
@@ -161,23 +161,25 @@ module:hook("server-stopped", remove_pidfile);
 
 -- Set signal handlers
 if have_signal then
-	signal.signal("SIGTERM", function ()
-		module:log("warn", "Received SIGTERM");
-		prosody.unlock_globals();
-		prosody.shutdown("Received SIGTERM");
-		prosody.lock_globals();
-	end);
+	module:add_timer(0, function ()
+		signal.signal("SIGTERM", function ()
+			module:log("warn", "Received SIGTERM");
+			prosody.unlock_globals();
+			prosody.shutdown("Received SIGTERM");
+			prosody.lock_globals();
+		end);
 
-	signal.signal("SIGHUP", function ()
-		module:log("info", "Received SIGHUP");
-		prosody.reload_config();
-		prosody.reopen_logfiles();
-	end);
+		signal.signal("SIGHUP", function ()
+			module:log("info", "Received SIGHUP");
+			prosody.reload_config();
+			prosody.reopen_logfiles();
+		end);
 
-	signal.signal("SIGINT", function ()
-		module:log("info", "Received SIGINT");
-		prosody.unlock_globals();
-		prosody.shutdown("Received SIGINT");
-		prosody.lock_globals();
+		signal.signal("SIGINT", function ()
+			module:log("info", "Received SIGINT");
+			prosody.unlock_globals();
+			prosody.shutdown("Received SIGINT");
+			prosody.lock_globals();
+		end);
 	end);
 end
